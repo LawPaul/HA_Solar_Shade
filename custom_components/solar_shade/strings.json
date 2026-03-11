@@ -1,0 +1,59 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Solar Shade",
+        "description": "Solar Shade will download LiDAR elevation data for your property and create shadow sensors. All settings can be configured from the Solar Shade panel after setup."
+      }
+    },
+    "abort": {
+      "single_instance_allowed": "Only a single instance of Solar Shade is allowed."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Solar Shade Settings"
+      },
+      "select_laz": {
+        "title": "Select LAZ File",
+        "description": "Pick a LAS/LAZ file from config/solar_shade/. Place your LiDAR download in that folder first.",
+        "data": {
+          "lidar_file": "LAZ file"
+        }
+      },
+      "settings": {
+        "title": "Solar Shade Settings",
+        "data": {
+          "enable_open_meteo": "Enable Open-Meteo radiation sensors (built-in, no hardware needed)",
+          "radiation_entity": "Radiation entity (overrides Open-Meteo if set)",
+          "diffuse_entity": "Diffuse radiation entity (optional)",
+          "diffuse_fraction": "Diffuse fraction (radiation in full shade)",
+          "min_cell_size": "Minimum cell size (higher = faster, lower = more detail)",
+          "update_interval": "Sensor update interval",
+          "download_radius": "LiDAR download radius (increase for larger properties)",
+          "min_shadow_height": "Min shadow height (objects shorter than this don't cast shadows)",
+          "shade_method": "Shade calculation method",
+          "canopy_model": "Tree canopy model",
+          "dsm_gap_fill": "Fill DSM gaps (experimental, may cause artifacts)",
+          "dsm_source": "DSM data source",
+          "lidar_project": "USGS LiDAR project path (optional)",
+          "latitude_override": "Latitude override (leave blank to use HA location)",
+          "longitude_override": "Longitude override (leave blank to use HA location)"
+        }
+      }
+    },
+    "error": {
+      "invalid_coordinates": "Invalid coordinate value. Latitude must be -90 to 90, longitude -180 to 180."
+    },
+    "abort": {
+      "no_laz_files": "No LAS/LAZ files found in config/solar_shade/. Place your LiDAR download there first."
+    }
+  },
+  "services": {
+    "reload_site": {
+      "name": "Reload site model",
+      "description": "Reload LiDAR data and recalculate shadow zones."
+    }
+  }
+}

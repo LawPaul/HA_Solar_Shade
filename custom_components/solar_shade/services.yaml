@@ -1,0 +1,5 @@
+reload_site:
+  name: Reload site model
+  description: >
+    Reload LiDAR data and recalculate shadow zones.
+  fields: {}

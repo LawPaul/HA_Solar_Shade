@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <clipPath id="disc">
+      <circle cx="128" cy="128" r="56"/>
+    </clipPath>
+  </defs>
+
+  <!-- Sun rays – bright (upper-left half) -->
+  <g stroke="#F5A623" stroke-width="8" stroke-linecap="round">
+    <line x1="128" y1="28" x2="128" y2="52"/>
+    <line x1="28" y1="128" x2="52" y2="128"/>
+    <line x1="57" y1="57" x2="74" y2="74"/>
+    <line x1="199" y1="57" x2="182" y2="74"/>
+    <line x1="74" y1="182" x2="57" y2="199"/>
+  </g>
+
+  <!-- Sun rays – shadowed (lower-right half) -->
+  <g stroke="#8B6914" stroke-width="8" stroke-linecap="round" opacity="0.35">
+    <line x1="128" y1="204" x2="128" y2="228"/>
+    <line x1="204" y1="128" x2="228" y2="128"/>
+    <line x1="182" y1="182" x2="199" y2="199"/>
+  </g>
+
+  <!-- Sun disc – golden -->
+  <circle cx="128" cy="128" r="56" fill="#FFD154"/>
+
+  <!-- Shadow: bottom-right triangle, diagonal from bottom-left to top-right -->
+  <polygon points="72,184 184,72 184,184"
+           fill="#7A5C00" clip-path="url(#disc)" opacity="0.6"/>
+</svg>

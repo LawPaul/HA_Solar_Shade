@@ -1,0 +1,2217 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Solar Shade</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="anonymous" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css" crossorigin="anonymous" />
+  <style>
+    /* Shrink Leaflet.Draw edit handles and guide lines */
+    .leaflet-editing-icon {
+      width: 8px !important;
+      height: 8px !important;
+      margin-left: -4px !important;
+      margin-top: -4px !important;
+      border-radius: 50%;
+    }
+    .leaflet-draw-guide-dash {
+      width: 4px !important;
+      height: 4px !important;
+    }
+    .leaflet-draw-tooltip {
+      font-size: 11px !important;
+    }
+    :root {
+      --bg-primary: #fafafa;
+      --bg-card: #ffffff;
+      --bg-secondary: #f5f5f5;
+      --text-primary: #212121;
+      --text-secondary: #727272;
+      --divider: #e0e0e0;
+      --primary: #03a9f4;
+      --error: #db4437;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg-primary: #1c1c1c;
+        --bg-card: #2a2a2a;
+        --bg-secondary: #333333;
+        --text-primary: #e0e0e0;
+        --text-secondary: #999999;
+        --divider: #444444;
+        --primary: #4fc3f7;
+        --error: #ef5350;
+      }
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: 'Roboto', sans-serif;
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      height: 100vh; display: flex; flex-direction: column; overflow: hidden;
+    }
+    .header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 16px 24px;
+      background: var(--bg-card);
+      border-bottom: 1px solid var(--divider);
+    }
+    .header h1 { font-size: 20px; font-weight: 500; }
+    .header .actions { display: flex; gap: 8px; }
+    .btn {
+      padding: 8px 16px; border: none; border-radius: 4px; cursor: pointer;
+      font-size: 14px; font-weight: 500;
+    }
+    .btn-primary {
+      background: var(--primary); color: #fff;
+    }
+    .btn-primary:hover { opacity: 0.9; }
+    .btn-secondary {
+      background: var(--bg-secondary);
+      color: var(--text-primary);
+    }
+    .container { display: flex; flex: 1; overflow: hidden; position: relative; }
+    #map { flex: 1; z-index: 0; }
+    .sidebar {
+      width: 320px; background: var(--bg-card);
+      border-left: 1px solid var(--divider);
+      overflow-y: auto; padding: 16px;
+      transition: transform 0.25s ease;
+    }
+    .sidebar-toggle {
+      display: none; position: fixed; bottom: 16px; right: 16px;
+      z-index: 1000; width: 48px; height: 48px; border-radius: 50%;
+      background: var(--primary, #03a9f4); color: #fff; border: none;
+      font-size: 22px; cursor: pointer; box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+      align-items: center; justify-content: center;
+    }
+    @media (max-width: 768px) {
+      .sidebar {
+        position: fixed; top: 0; right: 0; bottom: 0;
+        width: 85vw; max-width: 320px; z-index: 999;
+        transform: translateX(100%);
+        box-shadow: -4px 0 16px rgba(0,0,0,0.25);
+      }
+      .sidebar.open { transform: translateX(0); }
+      .sidebar-toggle { display: flex; }
+      .header { padding: 10px 16px; }
+      .header h1 { font-size: 16px; }
+      .header .actions { gap: 4px; flex-wrap: wrap; }
+      .btn { padding: 6px 10px; font-size: 12px; }
+    }
+    .sidebar h2 { font-size: 16px; font-weight: 500; margin-bottom: 12px; }
+    .zone-item {
+      padding: 12px; margin-bottom: 8px; border-radius: 8px;
+      background: var(--bg-secondary);
+      cursor: pointer; position: relative;
+    }
+    .zone-item:hover { outline: 2px solid var(--primary); }
+    .zone-item .name { font-weight: 500; font-size: 14px; }
+    .zone-item .meta { font-size: 12px; color: var(--text-secondary); margin-top: 4px; }
+    .zone-item .delete {
+      position: absolute; top: 8px; right: 8px;
+      background: none; border: none; cursor: pointer;
+      color: var(--error); font-size: 18px; padding: 4px;
+    }
+    .zone-item .delete:hover { opacity: 0.7; }
+    .empty-state {
+      text-align: center; padding: 32px 16px;
+      color: var(--text-secondary);
+    }
+    .empty-state p { margin-top: 8px; font-size: 13px; }
+    .dialog-overlay {
+      display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(0,0,0,0.5); z-index: 10000;
+      align-items: center; justify-content: center;
+    }
+    .dialog-overlay.open { display: flex; }
+    .dialog {
+      background: var(--bg-card); border-radius: 12px;
+      padding: 24px; min-width: 320px; max-width: 400px;
+    }
+    .dialog h3 { font-size: 18px; margin-bottom: 16px; }
+    .dialog label { display: block; font-size: 13px; font-weight: 500; margin-bottom: 4px; margin-top: 12px; }
+    .dialog input {
+      width: 100%; padding: 8px 12px; border: 1px solid var(--divider);
+      border-radius: 4px; font-size: 14px;
+      background: var(--bg-secondary); color: var(--text-primary);
+    }
+    .dialog .dialog-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 20px; }
+    .legend {
+      position: absolute; bottom: 20px; left: 20px; z-index: 1000;
+      background: var(--bg-card);
+      padding: 12px 16px; border-radius: 8px; font-size: 12px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+    }
+    .legend .legend-title { font-weight: 500; margin-bottom: 6px; }
+    .legend-item { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
+    .legend-swatch { width: 16px; height: 16px; border-radius: 3px; border: 1px solid rgba(0,0,0,0.2); }
+    .dsm-toggle {
+      position: absolute; top: 80px; right: 10px; z-index: 1000;
+      background: #fff; border-radius: 4px; padding: 6px 10px;
+      box-shadow: 0 1px 5px rgba(0,0,0,0.3); cursor: pointer;
+      font-size: 12px; border: none;
+    }
+    .status-bar {
+      position: absolute; top: 10px; left: 50%; transform: translateX(-50%);
+      z-index: 1000; background: var(--primary); color: #fff;
+      padding: 8px 16px; border-radius: 20px; font-size: 13px; font-weight: 500;
+      display: none;
+    }
+    .status-bar.visible { display: block; }
+    .time-controls {
+      display: none; align-items: center; justify-content: center; gap: 4px;
+      position: absolute; top: 8px; left: 50%; transform: translateX(-50%);
+      z-index: 1000;
+      background: var(--card-background-color, rgba(255,255,255,0.92));
+      backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+      padding: 3px 8px; border-radius: 20px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+      font-size: 13px; height: 32px; flex-shrink: 0; overflow: hidden;
+      pointer-events: auto;
+    }
+    .time-controls.visible { display: flex; }
+    .time-controls button {
+      background: none; border: none;
+      border-radius: 4px; padding: 2px 8px; cursor: pointer; font-size: 15px;
+      color: var(--primary-text-color, #333); font-weight: 600; flex-shrink: 0;
+      line-height: 1;
+    }
+    .time-controls button:hover { background: var(--primary-color, #03a9f4); color: #fff; }
+    .time-controls .time-label {
+      min-width: 56px; text-align: center; font-weight: 600;
+      font-size: 13px; flex-shrink: 0;
+      color: var(--primary-text-color, #333);
+    }
+  </style>
+</head>
+<body>
+
+<div class="header">
+  <h1>Site Overview</h1>
+  <div class="actions">
+    <button class="btn btn-secondary" id="btn-3d" title="Toggle 3D terrain view" aria-label="Toggle 3D terrain view">3D</button>
+    <button class="btn btn-secondary" id="btn-overlay" title="Cycle overlay: None, Heights, Surface Type" aria-label="Cycle overlay mode">Overlay: Off</button>
+    <button class="btn btn-secondary" id="btn-shadow" title="Show/hide live shadow overlay" aria-label="Toggle shadow overlay">Shadows</button>
+    <button class="btn btn-secondary" id="btn-timeline" title="Show daily shade forecast per zone" aria-label="Toggle shade forecast">Forecast</button>
+    <button class="btn btn-secondary" id="btn-fit" aria-label="Fit map to property bounds">Fit to Property</button>
+
+  </div>
+</div>
+
+<div class="container">
+  <div class="time-controls" id="time-controls">
+    <button id="btn-time-reset" title="Reset to current time" aria-label="Reset to current time">Now</button>
+    <button id="btn-time-back2" title="Back 2 hours" aria-label="Back 2 hours">&laquo;</button>
+    <button id="btn-time-back" title="Back 30 minutes" aria-label="Back 30 minutes">&lsaquo;</button>
+    <span class="time-label" id="time-label" aria-live="polite">Now</span>
+    <button id="btn-time-fwd" title="Forward 30 minutes" aria-label="Forward 30 minutes">&rsaquo;</button>
+    <button id="btn-time-fwd2" title="Forward 2 hours" aria-label="Forward 2 hours">&raquo;</button>
+  </div>
+  <div id="map"></div>
+  <div id="view3d" style="display:none; flex:1; background:#1a1a2e; position:relative; overflow:hidden;"></div>
+  <div class="sidebar" id="sidebar">
+    <h2>Zones</h2>
+    <div id="zone-list"></div>
+    <details style="margin-top: 16px;">
+      <summary style="cursor: pointer; font-size: 13px; font-weight: 500; padding: 8px 0; user-select: none;">LiDAR Settings</summary>
+      <div style="padding: 12px; background: var(--bg-secondary); border-radius: 0 0 8px 8px; margin-top: 4px;">
+        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;">
+          <span style="font-size: 13px;">Coverage Radius</span>
+          <span id="radius-display" style="font-size: 13px; font-weight: 500; color: var(--primary);">150m</span>
+        </div>
+        <input type="range" id="radius-slider" min="50" max="500" step="25" value="150"
+          style="width: 100%; accent-color: var(--primary, #03a9f4);" />
+        <div style="display: flex; justify-content: space-between; font-size: 11px; color: var(--text-secondary); margin-top: 2px;">
+          <span>50m</span><span>500m</span>
+        </div>
+        <button class="btn btn-secondary" id="btn-apply-radius" style="width:100%; margin-top: 8px; font-size: 12px; padding: 6px; display: none;">
+          Apply &amp; Re-download
+        </button>
+        <button class="btn btn-secondary" id="btn-clear-cache" style="width:100%;font-size:12px;padding:6px;color:#c62828;margin-top:8px;">Clear Cache &amp; Re-download LiDAR</button>
+      </div>
+    </details>
+    <div style="margin-top: 12px; font-size: 12px; color: var(--secondary-text-color, #888);">
+      Use the polygon tool on the map to draw zones, or the marker tool for single points. Click a zone to highlight it.
+    </div>
+  </div>
+</div>
+
+<div class="legend" id="legend" style="display:none;">
+  <div class="legend-title" id="legend-title">Height Above Ground</div>
+  <div id="legend-items">
+    <div class="legend-item"><div class="legend-swatch" style="background:rgba(0,0,0,0);border:1px dashed #999;"></div> &lt;1.5m (ground)</div>
+    <div class="legend-item"><div class="legend-swatch" style="background:#00b300;"></div> 1.5-3m (shrubs)</div>
+    <div class="legend-item"><div class="legend-swatch" style="background:#ccb300;"></div> 3-6m (small trees)</div>
+    <div class="legend-item"><div class="legend-swatch" style="background:#ff6600;"></div> 6-12m (trees/buildings)</div>
+    <div class="legend-item"><div class="legend-swatch" style="background:#e60000;"></div> 12m+ (tall trees)</div>
+  </div>
+</div>
+
+<!-- removed old dsm-toggle button -->
+
+<div class="status-bar" id="status-bar"></div>
+
+<!-- Name dialog -->
+<div class="dialog-overlay" id="name-dialog">
+  <div class="dialog">
+    <h3>Name this zone</h3>
+    <label for="zone-name-input">Zone name</label>
+    <input type="text" id="zone-name-input" placeholder="e.g., Front Lawn" autofocus />
+    <label style="display:flex;align-items:center;gap:8px;margin-top:12px;">
+      <input type="checkbox" id="zone-on-ground" checked style="width:16px;height:16px;">
+      <span style="font-size:13px;">On ground</span>
+      <span style="font-size:11px;color:var(--text-secondary);">(uncheck for elevated surfaces like rooftops or decks)</span>
+    </label>
+    <div class="dialog-actions">
+      <button class="btn btn-secondary" id="name-cancel">Cancel</button>
+      <button class="btn btn-primary" id="name-ok">Add Zone</button>
+    </div>
+  </div>
+</div>
+
+<button class="sidebar-toggle" id="sidebar-toggle" title="Toggle sidebar" aria-label="Toggle sidebar">&#9776;</button>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js" crossorigin="anonymous"></script>
+<script>
+(function() {
+  // ── Sidebar Toggle (mobile) ────────────────────────────────────────
+  const sidebarEl = document.getElementById('sidebar');
+  const sidebarToggle = document.getElementById('sidebar-toggle');
+  sidebarToggle.addEventListener('click', function() {
+    sidebarEl.classList.toggle('open');
+  });
+
+  // ── HA Connection ──────────────────────────────────────────────────
+
+  // Get HASS connection from parent
+  let hassConnection = null;
+  let entryId = null;
+
+  // Panel receives HASS object from HA frontend
+  function getHass() {
+    try {
+      const main = document.querySelector('home-assistant');
+      if (main && main.hass) return main.hass;
+    } catch(e) {}
+
+    // Fallback: get from parent frames
+    try {
+      if (window.parent && window.parent.document) {
+        const ha = window.parent.document.querySelector('home-assistant');
+        if (ha && ha.hass) return ha.hass;
+      }
+    } catch(e) {}
+    return null;
+  }
+
+  async function callWS(type, data) {
+    const hass = getHass();
+    if (hass && hass.callWS) {
+      return await hass.callWS({ type, ...data });
+    }
+    // Fallback: direct websocket
+    throw new Error('No HASS connection available');
+  }
+
+  // ── State ──────────────────────────────────────────────────────────
+
+  let zones = [];       // [{id, name, polygon: [[lat,lng],...], color}]
+  let dsmData = null;    // {bounds, heights, resolution}
+  let siteExtent = null; // {lat, lng, x_min_m, y_min_m, x_max_m, y_max_m}
+  let downloadRadius = 150;  // meters — shown as dashed square on map
+  let radiusRect = null;     // Leaflet rectangle layer
+
+  const ZONE_COLORS = [
+    '#2196F3', '#4CAF50', '#FF9800', '#9C27B0', '#F44336',
+    '#00BCD4', '#CDDC39', '#795548', '#607D8B', '#E91E63',
+    '#3F51B5', '#8BC34A', '#FFC107', '#673AB7', '#FF5722',
+  ];
+
+  // ── Map Setup ──────────────────────────────────────────────────────
+
+  const map = L.map('map', { zoomControl: true }).setView([0, 0], 2);
+
+  // Satellite tiles
+  L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+    maxZoom: 20,
+    attribution: 'Tiles &copy; Esri'
+  }).addTo(map);
+
+  // Labels overlay
+  L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer/tile/{z}/{y}/{x}', {
+    maxZoom: 20, opacity: 0.6
+  }).addTo(map);
+
+  // Drawing layer
+  const drawnItems = new L.FeatureGroup();
+  map.addLayer(drawnItems);
+
+  // Draw controls
+  const drawControl = new L.Control.Draw({
+    draw: {
+      polygon: {
+        allowIntersection: false,
+        showArea: true,
+        shapeOptions: { color: '#2196F3', weight: 2, fillOpacity: 0.25 },
+        icon: new L.DivIcon({ className: 'leaflet-editing-icon', iconSize: [8, 8] }),
+      },
+      polyline: false, rectangle: false, circle: false,
+      circlemarker: false, marker: { icon: new L.Icon.Default() }
+    },
+    edit: {
+      featureGroup: drawnItems,
+      remove: true,
+      edit: true
+    }
+  });
+  map.addControl(drawControl);
+
+  // DSM, surface type, and shadow overlay layers
+  let dsmOverlay = null;
+  let surfaceOverlay = null;
+  let shadowOverlay = null;
+  let shadowVisible = false;
+  let overlayMode = 'off'; // 'off' | 'heights' | 'surface'
+
+  // ── Polygon Events ─────────────────────────────────────────────────
+
+  let pendingLayer = null;
+
+  map.on(L.Draw.Event.CREATED, function(e) {
+    pendingLayer = e.layer;
+    pendingLayer._isPoint = (e.layerType === 'marker');
+    showNameDialog();
+  });
+
+  map.on(L.Draw.Event.EDITED, function(e) {
+    e.layers.eachLayer(function(layer) {
+      const zoneId = layer._solarShadeZoneId;
+      if (zoneId) {
+        const zone = zones.find(z => z.id === zoneId);
+        if (zone) {
+          zone.polygon = layerToCoords(layer);
+        }
+      }
+    });
+    renderSidebar();
+    autoSaveZones();
+  });
+
+  map.on(L.Draw.Event.DELETED, function(e) {
+    e.layers.eachLayer(function(layer) {
+      const zoneId = layer._solarShadeZoneId;
+      if (zoneId) {
+        zones = zones.filter(z => z.id !== zoneId);
+      }
+    });
+    renderSidebar();
+    autoSaveZones();
+  });
+
+  function layerToCoords(layer) {
+    if (layer instanceof L.Marker) {
+      const ll = layer.getLatLng();
+      return [[ll.lat, ll.lng]];
+    }
+    return layer.getLatLngs()[0].map(ll => [ll.lat, ll.lng]);
+  }
+
+  // ── Name Dialog ────────────────────────────────────────────────────
+
+  const nameDialog = document.getElementById('name-dialog');
+  const nameInput = document.getElementById('zone-name-input');
+
+  function showNameDialog() {
+    nameInput.value = '';
+    document.getElementById('zone-on-ground').checked = true;
+    nameDialog.classList.add('open');
+    setTimeout(() => nameInput.focus(), 100);
+  }
+
+  function hideNameDialog() {
+    nameDialog.classList.remove('open');
+  }
+
+  document.getElementById('name-ok').addEventListener('click', function() {
+    const name = nameInput.value.trim();
+    if (!name || !pendingLayer) { nameInput.focus(); return; }
+
+    const id = name.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
+    const color = ZONE_COLORS[zones.length % ZONE_COLORS.length];
+    const isPoint = !!pendingLayer._isPoint;
+    const onGround = document.getElementById('zone-on-ground').checked;
+
+    const zone = {
+      id: ensureUniqueId(id),
+      name: name,
+      polygon: layerToCoords(pendingLayer),
+      color: color,
+      is_point: isPoint,
+      surface: onGround ? 'ground' : 'dsm',
+    };
+    zones.push(zone);
+
+    // Style and add layer
+    if (!isPoint) {
+      const dashOpt = zone.surface === 'dsm' ? '6, 4' : null;
+      pendingLayer.setStyle({
+        color: color, fillColor: color, fillOpacity: 0.25, weight: 2,
+        dashArray: dashOpt,
+      });
+    }
+    pendingLayer._solarShadeZoneId = zone.id;
+    addZoneLabel(pendingLayer, zone);
+    drawnItems.addLayer(pendingLayer);
+
+    pendingLayer = null;
+    hideNameDialog();
+    renderSidebar();
+    autoSaveZones();
+  });
+
+  document.getElementById('name-cancel').addEventListener('click', function() {
+    pendingLayer = null;
+    hideNameDialog();
+  });
+
+  nameInput.addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') document.getElementById('name-ok').click();
+    if (e.key === 'Escape') document.getElementById('name-cancel').click();
+  });
+
+  function ensureUniqueId(base) {
+    let id = base;
+    let counter = 2;
+    const existing = new Set(zones.map(z => z.id));
+    while (existing.has(id)) { id = base + '_' + counter; counter++; }
+    return id;
+  }
+
+  // ── Zone Labels ────────────────────────────────────────────────────
+
+  function addZoneLabel(layer, zone) {
+    const center = layer instanceof L.Marker
+      ? layer.getLatLng()
+      : layer.getBounds().getCenter();
+    const label = L.tooltip({
+      permanent: true, direction: 'center',
+      className: 'zone-label',
+      offset: [0, layer instanceof L.Marker ? -20 : 0]
+    }).setContent(escapeHtml(zone.name));
+    layer.bindTooltip(label);
+  }
+
+  // ── Sidebar ────────────────────────────────────────────────────────
+
+  // Current shade data per zone (updated on shadow preview)
+  let currentShadeData = {};
+
+  // Store timeline data globally so renderSidebar can use it
+  let timelineData = null;
+
+  function renderSidebar() {
+    const list = document.getElementById('zone-list');
+
+    if (zones.length === 0) {
+      list.innerHTML = '<div class="empty-state"><p>No zones defined yet.</p><p>Use the polygon tool (▰) on the map to draw zones on your property.</p></div>';
+      return;
+    }
+
+    const currentHour = new Date().getHours();
+
+    list.innerHTML = zones.map(z => {
+      const area = computePolygonAreaSqM(z.polygon);
+      const shade = currentShadeData[z.id];
+      const shadeHtml = shade !== undefined
+        ? `<div class="shade-indicator" style="margin-top:4px;">
+             <div style="display:flex;align-items:center;gap:6px;">
+               <div style="flex:1;height:6px;background:#e0e0e0;border-radius:3px;overflow:hidden;">
+                 <div style="width:${(shade*100).toFixed(0)}%;height:100%;background:${shade > 0.6 ? '#1565c0' : shade > 0.3 ? '#ff9800' : '#ffc107'};border-radius:3px;"></div>
+               </div>
+               <span style="font-size:11px;font-weight:600;min-width:32px;text-align:right;">${(shade*100).toFixed(0)}%</span>
+             </div>
+             <div style="font-size:10px;color:var(--secondary-text-color,#999);margin-top:2px;">${shade > 0.6 ? 'Heavy shade' : shade > 0.3 ? 'Partial shade' : shade > 0 ? 'Light shade' : 'Full sun'} now</div>
+           </div>`
+        : '';
+
+      // Inline sparkline from timeline data
+      let sparklineHtml = '';
+      if (timelineData) {
+        const tz = timelineData.zones.find(tz => tz.id === z.id);
+        if (tz && tz.hourly_shade) {
+          const bars = tz.hourly_shade.map((s, i) => {
+            const h = Math.max(2, s * 24);
+            const color = s > 0.6 ? '#1565c0' : s > 0.3 ? '#ff9800' : s > 0 ? '#ffc107' : '#e0e0e0';
+            const isNow = parseInt(timelineData.hours[i]) === currentHour;
+            const border = isNow ? 'border:1px solid var(--primary-text-color,#333);' : '';
+            return `<div title="${timelineData.hours[i]}: ${(s*100).toFixed(0)}%" style="flex:1;height:${h}px;background:${color};border-radius:1px;${border}"></div>`;
+          }).join('');
+          const avgPct = (tz.avg_shade * 100).toFixed(0);
+          sparklineHtml = `<div style="margin-top:6px;">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:2px;">
+              <span style="font-size:10px;color:var(--secondary-text-color,#999);">Today</span>
+              <span style="font-size:10px;color:var(--secondary-text-color,#999);">avg ${avgPct}%</span>
+            </div>
+            <div style="display:flex;align-items:end;height:26px;gap:1px;background:var(--secondary-background-color,#f5f5f5);border-radius:3px;padding:1px;overflow:hidden;">${bars}</div>
+          </div>`;
+        }
+      }
+
+      const metaText = z.is_point
+        ? 'Point sensor'
+        : `${z.polygon.length} vertices · ~${area.toFixed(0)} m²`;
+      const surfaceLabel = z.surface === 'dsm' ? ' · Elevated' : ' · Ground';
+      return `<div class="zone-item" data-zone-id="${z.id}" style="border-left: 4px solid ${z.color}; ${z.surface === 'dsm' ? 'border-left-style:dashed;' : ''}">
+        <div class="name">${z.is_point ? '📍 ' : ''}${escapeHtml(z.name)}</div>
+        <div class="meta">${metaText}${surfaceLabel}</div>
+        ${shadeHtml}
+        ${sparklineHtml}
+        <button class="delete" data-zone-id="${z.id}" title="Delete zone">&times;</button>
+      </div>`;
+    }).join('');
+
+    // Click to zoom
+    list.querySelectorAll('.zone-item').forEach(el => {
+      el.addEventListener('click', function(e) {
+        if (e.target.classList.contains('delete')) return;
+        const zoneId = this.dataset.zoneId;
+        drawnItems.eachLayer(layer => {
+          if (layer._solarShadeZoneId === zoneId) {
+            map.fitBounds(layer.getBounds(), { padding: [50, 50] });
+            layer.setStyle({ weight: 4 });
+            setTimeout(() => layer.setStyle({ weight: 2 }), 1500);
+          }
+        });
+      });
+    });
+
+    // Delete buttons
+    list.querySelectorAll('.delete').forEach(btn => {
+      btn.addEventListener('click', function(e) {
+        e.stopPropagation();
+        const zoneId = this.dataset.zoneId;
+        zones = zones.filter(z => z.id !== zoneId);
+        drawnItems.eachLayer(layer => {
+          if (layer._solarShadeZoneId === zoneId) drawnItems.removeLayer(layer);
+        });
+        renderSidebar();
+        autoSaveZones();
+      });
+    });
+  }
+
+  function escapeHtml(str) {
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+  }
+
+  function computePolygonAreaSqM(coords) {
+    // Approximate area using Shoelace formula on projected meters
+    if (coords.length < 3) return 0;
+    const refLat = coords[0][0];
+    const mPerDegLat = 111320;
+    const mPerDegLng = 111320 * Math.cos(refLat * Math.PI / 180);
+
+    const pts = coords.map(c => [
+      (c[1] - coords[0][1]) * mPerDegLng,
+      (c[0] - coords[0][0]) * mPerDegLat
+    ]);
+
+    let area = 0;
+    for (let i = 0; i < pts.length; i++) {
+      const j = (i + 1) % pts.length;
+      area += pts[i][0] * pts[j][1];
+      area -= pts[j][0] * pts[i][1];
+    }
+    return Math.abs(area) / 2;
+  }
+
+  // ── Status Bar ─────────────────────────────────────────────────────
+
+  const statusBar = document.getElementById('status-bar');
+  let statusTimeout;
+
+  function showStatus(msg, duration) {
+    statusBar.textContent = msg;
+    statusBar.classList.add('visible');
+    clearTimeout(statusTimeout);
+    if (duration !== 0) {
+      statusTimeout = setTimeout(() => statusBar.classList.remove('visible'), duration || 4000);
+    }
+  }
+
+  // ── DSM Height Overlay ──────────────────────────────────────────────
+
+  async function loadDsmOverlay() {
+    try {
+      const data = await callWS('solar_shade/get_dsm_image', {});
+      if (!data.available || !data.image_url) {
+        showStatus('No DSM data available yet', 3000);
+        return;
+      }
+
+      if (dsmOverlay) map.removeLayer(dsmOverlay);
+      const bounds = L.latLngBounds(
+        [data.bounds.south, data.bounds.west],
+        [data.bounds.north, data.bounds.east]
+      );
+      dsmOverlay = L.imageOverlay(data.image_url, bounds, { opacity: 0.6 });
+      dsmVisible = true;
+      dsmOverlay.addTo(map);
+      document.getElementById('btn-dsm').style.background = 'var(--primary-color, #03a9f4)';
+      document.getElementById('btn-dsm').style.color = '#fff';
+      document.getElementById('legend').style.display = 'block';
+
+      const dtmLabel = data.has_dtm ? ' (with ground model)' : ' (surface only)';
+      showStatus(`DSM loaded: ${data.rows}×${data.cols} pixels${dtmLabel}`, 3000);
+    } catch(err) {
+      console.error('Failed to load DSM overlay:', err);
+      showStatus('Failed to load height data', 3000);
+    }
+  }
+
+  document.getElementById('btn-overlay').addEventListener('click', async function() {
+    const btn = this;
+    const legend = document.getElementById('legend');
+
+    // Cycle: off → heights → surface → off
+    if (overlayMode === 'off') {
+      overlayMode = 'heights';
+      btn.textContent = 'Overlay: Heights';
+      btn.style.background = 'var(--primary-color, #03a9f4)';
+      btn.style.color = '#fff';
+    } else if (overlayMode === 'heights') {
+      overlayMode = 'surface';
+      btn.textContent = 'Overlay: Surface';
+    } else {
+      overlayMode = 'off';
+      btn.textContent = 'Overlay: Off';
+      btn.style.background = '';
+      btn.style.color = '';
+    }
+
+    // Apply to 3D if active
+    if (is3dActive && viewer3d && viewer3d.set3dOverlayMode) {
+      viewer3d.set3dOverlayMode(overlayMode);
+      return; // skip 2D overlay logic
+    }
+
+    // Apply to 2D
+    if (overlayMode === 'heights') {
+      if (surfaceOverlay) { map.removeLayer(surfaceOverlay); surfaceOverlay = null; }
+      document.getElementById('legend-title').textContent = 'Height Above Ground';
+      document.getElementById('legend-items').innerHTML =
+        '<div class="legend-item"><div class="legend-swatch" style="background:rgba(0,0,0,0);border:1px dashed #999;"></div> &lt;1.5m (ground)</div>' +
+        '<div class="legend-item"><div class="legend-swatch" style="background:#00b300;"></div> 1.5-3m (shrubs)</div>' +
+        '<div class="legend-item"><div class="legend-swatch" style="background:#ccb300;"></div> 3-6m (small trees)</div>' +
+        '<div class="legend-item"><div class="legend-swatch" style="background:#ff6600;"></div> 6-12m (trees/buildings)</div>' +
+        '<div class="legend-item"><div class="legend-swatch" style="background:#e60000;"></div> 12m+ (tall trees)</div>';
+      legend.style.display = 'block';
+      showStatus('Loading height overlay...', 0);
+      try {
+        const data = await callWS('solar_shade/get_dsm_image', {});
+        if (!data.available || !data.image_url) { showStatus('No height data available', 3000); return; }
+        if (dsmOverlay) map.removeLayer(dsmOverlay);
+        const bounds = L.latLngBounds([data.bounds.south, data.bounds.west], [data.bounds.north, data.bounds.east]);
+        dsmOverlay = L.imageOverlay(data.image_url, bounds, { opacity: 0.6 });
+        dsmOverlay.addTo(map);
+        showStatus(`Heights: ${data.rows}×${data.cols}`, 3000);
+      } catch(e) { showStatus('Failed to load heights', 3000); }
+    } else if (overlayMode === 'surface') {
+      if (dsmOverlay) { map.removeLayer(dsmOverlay); dsmOverlay = null; }
+      document.getElementById('legend-title').textContent = 'Surface Type';
+      document.getElementById('legend-items').innerHTML =
+        '<div class="legend-item"><div class="legend-swatch" style="background:#c2b280;"></div> Ground</div>' +
+        '<div class="legend-item"><div class="legend-swatch" style="background:#8ccc4d;"></div> Low Vegetation</div>' +
+        '<div class="legend-item"><div class="legend-swatch" style="background:#4da633;"></div> Medium Vegetation</div>' +
+        '<div class="legend-item"><div class="legend-swatch" style="background:#1a731f;"></div> Trees</div>' +
+        '<div class="legend-item"><div class="legend-swatch" style="background:#bf3326;"></div> Buildings</div>' +
+        '<div class="legend-item"><div class="legend-swatch" style="background:#4080c8;"></div> Water</div>' +
+        '<div class="legend-item"><div class="legend-swatch" style="background:#998c80;"></div> Unclassified</div>';
+      legend.style.display = 'block';
+      showStatus('Loading surface type overlay...', 0);
+      try {
+        const data = await callWS('solar_shade/get_surface_type_image', {});
+        if (!data.available || !data.image_url) { showStatus('No classification data', 3000); overlayMode = 'off'; btn.textContent = 'Overlay: Off'; btn.style.background = ''; btn.style.color = ''; legend.style.display = 'none'; return; }
+        if (surfaceOverlay) map.removeLayer(surfaceOverlay);
+        const bounds = L.latLngBounds([data.bounds.south, data.bounds.west], [data.bounds.north, data.bounds.east]);
+        surfaceOverlay = L.imageOverlay(data.image_url, bounds, { opacity: 0.6 });
+        surfaceOverlay.addTo(map);
+        showStatus('Surface types: ground, vegetation, buildings', 3000);
+      } catch(e) { showStatus('Failed to load surface types', 3000); }
+    } else {
+      if (dsmOverlay) { map.removeLayer(dsmOverlay); dsmOverlay = null; }
+      if (surfaceOverlay) { map.removeLayer(surfaceOverlay); surfaceOverlay = null; }
+      legend.style.display = 'none';
+    }
+  });
+
+  // ── Live Shadow Overlay ────────────────────────────────────────────
+
+  let currentHourOffset = 0;
+  let playInterval = null;
+  let isPlaying = false;
+
+  async function loadShadowOverlay(hourOffset) {
+    if (hourOffset !== undefined) currentHourOffset = hourOffset;
+    try {
+      const data = await callWS('solar_shade/get_shadow_preview', { hour_offset: currentHourOffset });
+      if (!data.available) {
+        showStatus('No shadow data available', 3000);
+        return;
+      }
+
+      if (data.sun_below_horizon) {
+        // Still enable shadow mode + time controls so user can navigate to a sunlit time
+        shadowVisible = true;
+        document.getElementById('btn-shadow').style.background = '#5c3d99';
+        document.getElementById('btn-shadow').style.color = '#fff';
+        document.getElementById('time-controls').classList.add('visible');
+        const timeLabel = data.time_label || 'Now';
+        document.getElementById('time-label').textContent =
+          currentHourOffset === 0 ? 'Now' : timeLabel;
+        showStatus(`Sun below horizon — use time controls to view earlier/later`, 4000);
+        return;
+      }
+
+      if (shadowOverlay) map.removeLayer(shadowOverlay);
+      const bounds = L.latLngBounds(
+        [data.bounds.south, data.bounds.west],
+        [data.bounds.north, data.bounds.east]
+      );
+      shadowOverlay = L.imageOverlay(data.image_url, bounds, { opacity: 0.8 });
+      shadowVisible = true;
+      shadowOverlay.addTo(map);
+      document.getElementById('btn-shadow').style.background = '#5c3d99';
+      document.getElementById('btn-shadow').style.color = '#fff';
+
+      // Show time controls
+      const timeControls = document.getElementById('time-controls');
+      timeControls.classList.add('visible');
+
+      // Update time label
+      const timeLabel = data.time_label || 'Now';
+      document.getElementById('time-label').textContent =
+        currentHourOffset === 0 ? 'Now' : timeLabel;
+
+      const pct = (data.shade_fraction * 100).toFixed(0);
+
+      showStatus(
+        `Shadows ${currentHourOffset === 0 ? 'now' : 'at ' + timeLabel}: ${pct}% shaded`,
+        3000
+      );
+
+      // Also fetch per-zone shade data and update sidebar + zone colors
+      fetchZoneShade();
+
+    } catch(err) {
+      console.error('Failed to load shadow overlay:', err);
+      showStatus('Failed to load shadow preview', 3000);
+    }
+  }
+
+  // ── Per-zone live shade ────────────────────────────────────────────
+
+  async function fetchZoneShade() {
+    try {
+      const data = await callWS('solar_shade/get_shade_timeline', {});
+      if (!data.available || !data.zones) return;
+
+      // Update current shade data from the current hour (use HA server time)
+      const currentHour = data.current_hour;
+      const hourIdx = data.hours.findIndex(h => parseInt(h) === currentHour);
+
+      data.zones.forEach(z => {
+        if (hourIdx >= 0 && hourIdx < z.hourly_shade.length) {
+          currentShadeData[z.id] = z.hourly_shade[hourIdx];
+        } else {
+          currentShadeData[z.id] = z.avg_shade;
+        }
+      });
+
+      // Re-render sidebar with shade indicators
+      renderSidebar();
+
+    } catch(err) {
+      console.warn('Could not fetch zone shade data:', err);
+    }
+  }
+
+  document.getElementById('btn-shadow').addEventListener('click', function() {
+    if (shadowVisible && shadowOverlay) {
+      map.removeLayer(shadowOverlay);
+      shadowVisible = false;
+      this.style.background = '';
+      this.style.color = '';
+      // Hide time controls and stop playback
+      document.getElementById('time-controls').classList.remove('visible');
+      stopPlayback();
+      currentHourOffset = 0;
+    } else {
+      currentHourOffset = 0;
+      loadShadowOverlay(0);
+    }
+  });
+
+  // ── Time Controls ──────────────────────────────────────────────────
+
+  function stopPlayback() {
+    if (playInterval) { clearInterval(playInterval); playInterval = null; }
+    isPlaying = false;
+  }
+
+  function adjustTime(delta) {
+    stopPlayback();
+    currentHourOffset += delta;
+    // Clamp to reasonable range (-12 to +12 hours)
+    currentHourOffset = Math.max(-12, Math.min(12, currentHourOffset));
+    if (is3dActive) {
+      update3dSunPosition();
+    } else if (shadowVisible) {
+      loadShadowOverlay(currentHourOffset);
+    }
+  }
+
+  document.getElementById('btn-time-back2').addEventListener('click', () => adjustTime(-2));
+  document.getElementById('btn-time-back').addEventListener('click', () => adjustTime(-0.5));
+  document.getElementById('btn-time-fwd').addEventListener('click', () => adjustTime(0.5));
+  document.getElementById('btn-time-fwd2').addEventListener('click', () => adjustTime(2));
+
+  document.getElementById('btn-time-reset').addEventListener('click', () => {
+    stopPlayback();
+    currentHourOffset = 0;
+    if (is3dActive) {
+      update3dSunPosition();
+    } else if (shadowVisible) {
+      loadShadowOverlay(0);
+    }
+  });
+
+  // Stop playback when page is hidden (user navigates away)
+  document.addEventListener('visibilitychange', function() {
+    if (document.hidden) stopPlayback();
+  });
+
+  // ── Daily Shade Timeline ───────────────────────────────────────────
+
+  document.getElementById('btn-timeline').addEventListener('click', async function() {
+    const shadeLegend = null; // legend removed
+
+    if (timelineData) {
+      // Toggle off — clear data, re-render
+      timelineData = null;
+      renderSidebar();
+      this.textContent = 'Forecast';
+      this.style.background = '';
+      this.style.color = '';
+      return;
+    }
+
+    this.textContent = 'Loading...';
+
+    try {
+      const data = await callWS('solar_shade/get_shade_timeline', {});
+      if (!data.available || !data.zones || data.zones.length === 0) {
+        showStatus('No zone data available — draw and save zones first', 3000);
+        this.textContent = 'Forecast';
+        return;
+      }
+
+      // Store globally for renderSidebar sparklines
+      timelineData = data;
+
+      // Also update current shade data
+      const now = new Date();
+      const currentHour = now.getHours();
+      const hourIdx = data.hours.findIndex(h => parseInt(h) === currentHour);
+      data.zones.forEach(z => {
+        if (hourIdx >= 0) currentShadeData[z.id] = z.hourly_shade[hourIdx];
+      });
+      renderSidebar();
+
+      this.textContent = 'Forecast';
+      this.style.background = '#5c3d99';
+      this.style.color = '#fff';
+
+    } catch(err) {
+      console.error('Timeline failed:', err);
+      showStatus('Failed to load shade forecast', 3000);
+      this.textContent = 'Forecast';
+    }
+  });
+
+  // ── Auto-save zones ────────────────────────────────────────────────
+
+  let _saveTimeout = null;
+  function autoSaveZones() {
+    // Debounce: wait 500ms after last change before saving
+    if (_saveTimeout) clearTimeout(_saveTimeout);
+    _saveTimeout = setTimeout(async () => {
+      const zoneData = zones.map(z => ({
+        id: z.id,
+        name: z.name,
+        polygon: z.polygon,
+        color: z.color,
+        is_point: z.is_point || false,
+        surface: z.surface || 'ground',
+      }));
+      try {
+        await callWS('solar_shade/save_zones', { zones: zoneData });
+        showStatus('Zones saved — sensors will update shortly', 2000);
+      } catch(err) {
+        console.error('Auto-save failed:', err);
+        showStatus('Failed to save zones', 3000);
+      }
+    }, 500);
+  }
+
+  // ── Fit ────────────────────────────────────────────────────────────
+
+  document.getElementById('btn-fit').addEventListener('click', function() {
+    if (drawnItems.getLayers().length > 0) {
+      map.fitBounds(drawnItems.getBounds(), { padding: [50, 50] });
+    } else if (siteExtent) {
+      fitToSiteExtent();
+    }
+  });
+
+  function fitToSiteExtent() {
+    if (!siteExtent) return;
+    const lat = siteExtent.lat;
+    const lng = siteExtent.lng;
+    const mPerDegLat = 111320;
+    const mPerDegLng = 111320 * Math.cos(lat * Math.PI / 180);
+    const south = lat + siteExtent.y_min_m / mPerDegLat;
+    const north = lat + siteExtent.y_max_m / mPerDegLat;
+    const west = lng + siteExtent.x_min_m / mPerDegLng;
+    const east = lng + siteExtent.x_max_m / mPerDegLng;
+    map.fitBounds([[south, west], [north, east]], { padding: [30, 30] });
+  }
+
+  // ── Radius Circle ───────────────────────────────────────────────────
+
+  function updateRadiusCircle(lat, lng) {
+    if (radiusRect) {
+      map.removeLayer(radiusRect);
+    }
+    // Approximate meter offset to lat/lng degrees
+    const dLat = downloadRadius / 111320;
+    const dLng = downloadRadius / (111320 * Math.cos(lat * Math.PI / 180));
+    const bounds = [
+      [lat - dLat, lng - dLng],
+      [lat + dLat, lng + dLng],
+    ];
+    radiusRect = L.rectangle(bounds, {
+      color: 'var(--primary, #03a9f4)',
+      weight: 2,
+      dashArray: '8, 6',
+      fill: false,
+      interactive: false,
+    }).addTo(map);
+
+    // Update the radius display
+    const radiusDisplay = document.getElementById('radius-display');
+    if (radiusDisplay) radiusDisplay.textContent = `${downloadRadius}m`;
+  }
+
+  // ── Load Data ──────────────────────────────────────────────────────
+
+  async function loadData() {
+    try {
+      const data = await callWS('solar_shade/get_config', {});
+
+      entryId = data.entry_id;
+
+      // Download radius
+      if (data.download_radius) {
+        downloadRadius = data.download_radius;
+        const slider = document.getElementById('radius-slider');
+        if (slider) slider.value = downloadRadius;
+        const display = document.getElementById('radius-display');
+        if (display) display.textContent = downloadRadius + 'm';
+      }
+
+      // Set map position
+      if (data.latitude && data.longitude) {
+        map.setView([data.latitude, data.longitude], 19);
+        updateRadiusCircle(data.latitude, data.longitude);
+      }
+
+      // Site extent
+      if (data.site_extent) {
+        siteExtent = {
+          lat: data.latitude, lng: data.longitude,
+          ...data.site_extent
+        };
+        fitToSiteExtent();
+      }
+
+      // Load existing zones
+      if (data.zones) {
+        zones = data.zones.map((z, i) => ({
+          id: z.id,
+          name: z.name,
+          polygon: z.polygon,
+          color: z.color || ZONE_COLORS[i % ZONE_COLORS.length],
+          is_point: z.is_point || (z.polygon && z.polygon.length === 1),
+          surface: z.surface || 'ground',
+        }));
+
+        // Add to map
+        zones.forEach(zone => {
+          let layer;
+          if (zone.is_point && zone.polygon.length === 1) {
+            layer = L.marker([zone.polygon[0][0], zone.polygon[0][1]]);
+          } else {
+            const dashOpt = zone.surface === 'dsm' ? '6, 4' : null;
+            layer = L.polygon(zone.polygon.map(p => [p[0], p[1]]), {
+              color: zone.color, fillColor: zone.color,
+              fillOpacity: 0.25, weight: 2,
+              dashArray: dashOpt,
+            });
+          }
+          layer._solarShadeZoneId = zone.id;
+          addZoneLabel(layer, zone);
+          drawnItems.addLayer(layer);
+        });
+
+        renderSidebar();
+      }
+
+      // DSM overlay — auto-load if data exists
+      if (data.site_extent) {
+        // Don't auto-show, but make buttons available
+      }
+
+    } catch(err) {
+      console.warn('Could not load Solar Shade config:', err);
+      // Fallback: center on HA configured location
+      try {
+        const hass = getHass();
+        if (hass && hass.config) {
+          map.setView([hass.config.latitude, hass.config.longitude], 19);
+        }
+      } catch(e) {}
+      renderSidebar();
+    }
+  }
+
+  // ── Init ───────────────────────────────────────────────────────────
+
+  // Radius slider interactions
+  const radiusSlider = document.getElementById('radius-slider');
+  const applyRadiusBtn = document.getElementById('btn-apply-radius');
+  let radiusDirty = false;
+
+  radiusSlider.addEventListener('input', function() {
+    const val = parseInt(this.value);
+    document.getElementById('radius-display').textContent = val + 'm';
+
+    // Update circle preview immediately
+    downloadRadius = val;
+    if (radiusRect && map) {
+      // Recalculate rectangle bounds with new radius
+      const center = radiusRect.getBounds().getCenter();
+      const dLat = val / 111320;
+      const dLng = val / (111320 * Math.cos(center.lat * Math.PI / 180));
+      radiusRect.setBounds([
+        [center.lat - dLat, center.lng - dLng],
+        [center.lat + dLat, center.lng + dLng],
+      ]);
+    }
+
+    // Show apply button only if changed from saved value
+    applyRadiusBtn.style.display = 'block';
+    radiusDirty = true;
+  });
+
+  applyRadiusBtn.addEventListener('click', async function() {
+    if (!radiusDirty) return;
+    const newRadius = parseInt(radiusSlider.value);
+    try {
+      showStatus('Updating radius to ' + newRadius + 'm and re-downloading...');
+      applyRadiusBtn.disabled = true;
+      applyRadiusBtn.textContent = 'Downloading...';
+      await callWS('solar_shade/update_radius', { radius: newRadius });
+      radiusDirty = false;
+      applyRadiusBtn.style.display = 'none';
+      applyRadiusBtn.disabled = false;
+      applyRadiusBtn.innerHTML = 'Apply &amp; Re-download';
+      showStatus('Radius updated to ' + newRadius + 'm — integration reloading');
+    } catch(err) {
+      showStatus('Failed to update radius: ' + err.message);
+      applyRadiusBtn.disabled = false;
+      applyRadiusBtn.innerHTML = 'Apply &amp; Re-download';
+    }
+  });
+
+  document.getElementById('btn-clear-cache').addEventListener('click', async function() {
+    if (!confirm('Clear cached LiDAR data and re-download from USGS? This may take a few minutes.')) return;
+    const btn = this;
+    try {
+      btn.disabled = true;
+      btn.textContent = 'Clearing & re-downloading...';
+      showStatus('Clearing cache and starting fresh LiDAR download...');
+      await callWS('solar_shade/clear_cache', {});
+      showStatus('Cache cleared — LiDAR data is being re-downloaded in the background');
+      btn.textContent = 'Downloading...';
+      // Reload page after a short delay to pick up new data
+      setTimeout(() => location.reload(), 5000);
+    } catch(err) {
+      showStatus('Failed to clear cache: ' + err.message);
+      btn.disabled = false;
+      btn.innerHTML = 'Clear Cache &amp; Re-download LiDAR';
+    }
+  });
+
+  // ── Settings Panel ─────────────────────────────────────────────────
+
+  renderSidebar();
+
+  // Wait for HA to inject hass object, then load
+  let loadAttempts = 0;
+  const loadInterval = setInterval(() => {
+    loadAttempts++;
+    const hass = getHass();
+    if (hass || loadAttempts > 50) {
+      clearInterval(loadInterval);
+      if (hass) loadData();
+    }
+  }, 200);
+
+  // ── 3D Viewer ──────────────────────────────────────────────────────
+
+  let viewer3d = null;
+  let is3dActive = false;
+
+  document.getElementById('btn-3d').addEventListener('click', async function() {
+    const mapEl = document.getElementById('map');
+    const view3dEl = document.getElementById('view3d');
+
+    if (is3dActive) {
+      // Switch back to 2D — clean up 3D resources
+      if (viewer3d) {
+        viewer3d.resizeObs.disconnect();
+        viewer3d.renderer.dispose();
+        if (viewer3d.compassRenderer) viewer3d.compassRenderer.dispose();
+        viewer3d.scene.traverse(obj => {
+          if (obj.geometry) obj.geometry.dispose();
+          if (obj.material) {
+            if (Array.isArray(obj.material)) obj.material.forEach(m => m.dispose());
+            else obj.material.dispose();
+          }
+        });
+        while (view3dEl.firstChild) view3dEl.removeChild(view3dEl.firstChild);
+        viewer3d = null;
+      }
+      view3dEl.style.display = 'none';
+      mapEl.style.display = '';
+      map.invalidateSize();
+      is3dActive = false;
+      this.style.background = '';
+      this.style.color = '';
+      // Re-apply current overlay mode to 2D map
+      if (overlayMode === 'heights') {
+        loadDsmOverlay();
+      } else if (overlayMode === 'surface') {
+        loadClassificationOverlay();
+      }
+      // Hide time controls if no 2D shadow active
+      if (!shadowVisible) {
+        document.getElementById('time-controls').classList.remove('visible');
+        stopPlayback();
+        currentHourOffset = 0;
+      }
+      return;
+    }
+
+    // Switch to 3D
+    showStatus('Loading 3D terrain...', 0);
+
+    try {
+      const data = await callWS('solar_shade/get_dsm_data', { hour_offset: currentHourOffset });
+      if (!data.available) {
+        showStatus('No elevation data available for 3D view', 3000);
+        return;
+      }
+
+      mapEl.style.display = 'none';
+      view3dEl.style.display = '';
+      is3dActive = true;
+      this.style.background = '#5c3d99';
+      this.style.color = '#fff';
+
+      // Show time controls only if shadows are active
+      if (shadowVisible) {
+        document.getElementById('time-controls').classList.add('visible');
+      }
+      document.getElementById('time-label').textContent =
+        currentHourOffset === 0 ? 'Now' : (data.time_label || 'Now');
+
+      if (!viewer3d) {
+        await load3dLib();
+      }
+      render3d(view3dEl, data);
+
+      // Apply current overlay mode to 3D view
+      if (viewer3d && viewer3d.set3dOverlayMode && overlayMode !== 'off') {
+        viewer3d.set3dOverlayMode(overlayMode);
+      }
+      showStatus(
+        `3D: ${data.rows}×${data.cols} grid, sun az ${data.sun_azimuth.toFixed(0)}° el ${data.sun_elevation.toFixed(0)}° — drag to rotate, scroll to zoom`,
+        5000
+      );
+    } catch(err) {
+      console.error('3D view failed:', err);
+      showStatus('Failed to load 3D view', 3000);
+    }
+  });
+
+  function load3dLib() {
+    return new Promise((resolve, reject) => {
+      if (window.THREE) { resolve(); return; }
+
+      // Three.js r183+ uses ES modules only. Load via import map + dynamic import.
+      const importMap = document.createElement('script');
+      importMap.type = 'importmap';
+      importMap.textContent = JSON.stringify({
+        imports: {
+          "three": "https://unpkg.com/three@0.183.2/build/three.module.js",
+          "three/addons/": "https://unpkg.com/three@0.183.2/examples/jsm/"
+        }
+      });
+      document.head.appendChild(importMap);
+
+      const loader = document.createElement('script');
+      loader.type = 'module';
+      loader.textContent = `
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        window.THREE = Object.assign({}, THREE);
+        window.THREE.OrbitControls = OrbitControls;
+        window.dispatchEvent(new Event('three-loaded'));
+      `;
+      window.addEventListener('three-loaded', () => resolve(), { once: true });
+      loader.onerror = reject;
+      document.head.appendChild(loader);
+    });
+  }
+
+  function render3d(container, data) {
+    // Clean up previous
+    while (container.firstChild) container.removeChild(container.firstChild);
+
+    const width = container.clientWidth;
+    const height = container.clientHeight;
+    const T = THREE;
+
+    // Scene
+    const scene = new T.Scene();
+    scene.background = new T.Color(0x87CEEB); // sky blue
+    scene.fog = new T.Fog(0x87CEEB, 500, 1500);
+
+    // Camera — start from south-east isometric view
+    const camera = new T.PerspectiveCamera(50, width / height, 0.1, 2000);
+    const gridW = data.x_max_m - data.x_min_m;
+    const gridH = data.y_max_m - data.y_min_m;
+    const diag = Math.sqrt(gridW * gridW + gridH * gridH);
+    // SE = +X (east), +Z (south), elevated Y
+    const camDist = diag * 0.55;
+    const camElev = Math.PI * 0.22; // ~40° above horizon
+    const camAz = Math.PI * 0.75;   // 135° = SE
+    camera.position.set(
+      camDist * Math.sin(camAz) * Math.cos(camElev),
+      camDist * Math.sin(camElev),
+      -camDist * Math.cos(camAz) * Math.cos(camElev)
+    );
+    camera.lookAt(0, 0, 0);
+
+    // Renderer
+    const renderer = new T.WebGLRenderer({ antialias: true });
+    renderer.setSize(width, height);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = T.PCFShadowMap;
+    renderer.outputColorSpace = T.SRGBColorSpace;
+    container.appendChild(renderer.domElement);
+
+    // Controls — orbit mode (default)
+    const orbitControls = new T.OrbitControls(camera, renderer.domElement);
+    orbitControls.target.set(0, 5, 0);
+    orbitControls.enableDamping = true;
+    orbitControls.dampingFactor = 0.1;
+    orbitControls.maxPolarAngle = Math.PI * 0.48;
+    orbitControls.update();
+
+    // FPS fly mode state
+    let flyActive = false;
+    let flyLooking = false;
+    const flyMoveState = { forward: false, backward: false, left: false, right: false, up: false, down: false };
+    let flySpeed = 40;
+    let flyEuler = new T.Euler(0, 0, 0, 'YXZ');
+    let _lastTime = performance.now();
+    function _getDelta() {
+      const now = performance.now();
+      const dt = (now - _lastTime) / 1000;
+      _lastTime = now;
+      return dt;
+    }
+
+    // Decode base64 binary arrays (much smaller than JSON)
+    function b64ToFloat32(b64, rows, cols) {
+      const bin = atob(b64);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      const flat = new Float32Array(bytes.buffer);
+      // Reshape to 2D array for easy [r][c] access
+      const arr = new Array(rows);
+      for (let r = 0; r < rows; r++) arr[r] = flat.subarray(r * cols, (r + 1) * cols);
+      return arr;
+    }
+    function b64ToUint8(b64, rows, cols) {
+      const bin = atob(b64);
+      const flat = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) flat[i] = bin.charCodeAt(i);
+      const arr = new Array(rows);
+      for (let r = 0; r < rows; r++) arr[r] = flat.subarray(r * cols, (r + 1) * cols);
+      return arr;
+    }
+
+    // Build separate meshes for ground and elevated features
+    const rows = data.rows;
+    const cols = data.cols;
+    const px = data.pixel_m;
+    const dsm = b64ToFloat32(data.dsm_b64, rows, cols);
+    const gnd = b64ToFloat32(data.ground_b64, rows, cols);
+    const trans = data.transmittance_b64 ? b64ToFloat32(data.transmittance_b64, rows, cols) : null;
+    const cls = data.classification_b64 ? b64ToUint8(data.classification_b64, rows, cols) : null;
+
+    // ASPRS LAS classification codes
+    const CLS_GROUND = 2;
+    const CLS_LOW_VEG = 3;
+    const CLS_MED_VEG = 4;
+    const CLS_HIGH_VEG = 5;
+    const CLS_BUILDING = 6;
+    const CLS_WATER = 9;
+
+    // Color palette
+    const COL_GROUND    = [0.76, 0.70, 0.50]; // sandy tan
+    const COL_LOW_VEG   = [0.55, 0.80, 0.30]; // bright lime green
+    const COL_MED_VEG   = [0.30, 0.65, 0.20]; // medium green
+    const COL_HIGH_VEG  = [0.10, 0.45, 0.12]; // dark forest green
+    const COL_BUILDING  = [0.75, 0.20, 0.15]; // red
+    const COL_WATER     = [0.25, 0.50, 0.78]; // blue
+    const COL_UNKNOWN   = [0.60, 0.55, 0.50]; // neutral gray
+
+    // Classify each cell
+    const cellType = new Array(rows * cols); // 'ground','low','med','high','building','water','unknown'
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        const idx = r * cols + c;
+        const hab = dsm[r][c] - gnd[r][c];
+        let type = 'ground';
+        if (cls) {
+          const code = cls[r][c];
+          if (hab < 0.2 && code !== CLS_BUILDING) type = 'ground';
+          else if (code === CLS_BUILDING) type = 'building';
+          else if (code === CLS_HIGH_VEG) type = 'high';
+          else if (code === CLS_MED_VEG) type = 'med';
+          else if (code === CLS_LOW_VEG) type = 'low';
+          else if (code === CLS_WATER) type = 'water';
+          else if (code === CLS_GROUND) type = 'ground';
+          else type = hab < 0.5 ? 'ground' : hab < 3 ? 'low' : 'unknown';
+        } else if (trans) {
+          const t = trans[r][c];
+          if (hab < 0.3) type = 'ground';
+          else if (t < 0.05 && hab > 2) type = 'building';
+          else if (t >= 0.5) type = 'low';
+          else if (t >= 0.3) type = 'med';
+          else type = 'high';
+        } else {
+          if (hab < 0.3) type = 'ground';
+          else if (hab < 2) type = 'low';
+          else if (hab < 5) type = 'med';
+          else if (hab < 15) type = 'high';
+          else type = 'building';
+        }
+        cellType[idx] = type;
+      }
+    }
+
+    // ── Ground mesh (DTM surface) ──────────────────────────────
+    const groundGeom = new T.PlaneGeometry(gridW, gridH, cols - 1, rows - 1);
+    groundGeom.rotateX(-Math.PI / 2);
+    const gndPos = groundGeom.attributes.position;
+
+    // Pre-compute vertex colors for all 3 overlay modes
+    const surfaceColors = new Float32Array(gndPos.count * 3);
+    const heightColors = new Float32Array(gndPos.count * 3);
+
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        const idx = r * cols + c;
+        gndPos.setY(idx, gnd[r][c]);
+
+        // Surface type colors (mode: surface)
+        const type = cellType[idx];
+        let col;
+        if (type === 'ground') col = COL_GROUND;
+        else if (type === 'low') col = COL_LOW_VEG;
+        else if (type === 'water') col = COL_WATER;
+        else col = COL_GROUND;
+        const j = (Math.random() - 0.5) * 0.04;
+        surfaceColors[idx * 3]     = Math.max(0, Math.min(1, col[0] + j));
+        surfaceColors[idx * 3 + 1] = Math.max(0, Math.min(1, col[1] + j));
+        surfaceColors[idx * 3 + 2] = Math.max(0, Math.min(1, col[2] + j));
+
+        // Height-above-ground colors (mode: heights) — same ramp as 2D
+        const hab = dsm[r][c] - gnd[r][c];
+        const h = Math.min(hab, 15);
+        let hr = 0, hg = 0, hb = 0;
+        if (h < 1.5) { hr = 0.5; hg = 0.7; hb = 0.4; } // light green for ground
+        else if (h < 3) { const t = (h-1.5)/1.5; hr = t*0.6; hg = 0.7; }
+        else if (h < 6) { const t = (h-3)/3; hr = 0.6+t*0.4; hg = 0.7-t*0.3; }
+        else if (h < 12) { const t = (h-6)/6; hr = 1.0; hg = 0.4-t*0.4; }
+        else { hr = 0.9; hg = 0; }
+        heightColors[idx * 3]     = hr;
+        heightColors[idx * 3 + 1] = hg;
+        heightColors[idx * 3 + 2] = hb;
+      }
+    }
+
+    // Start with surface colors as default
+    groundGeom.setAttribute('color', new T.Float32BufferAttribute(surfaceColors, 3));
+    groundGeom.computeVertexNormals();
+
+    const groundMat = new T.MeshLambertMaterial({ vertexColors: true, side: T.DoubleSide });
+    const groundMesh = new T.Mesh(groundGeom, groundMat);
+    groundMesh.receiveShadow = true;
+    scene.add(groundMesh);
+
+    // Satellite texture — fetched async, stored for mode switching
+    let satelliteTexture = null;
+    (async function() {
+      try {
+        const satData = await callWS('solar_shade/get_satellite_image', {});
+        if (!satData.available) return;
+        const tex = new T.TextureLoader().load(satData.image_url, () => {
+          satelliteTexture = tex;
+          // Apply satellite by default (overlay mode = 'off' means satellite)
+          if (overlayMode === 'off') {
+            groundMat.map = tex;
+            groundMat.vertexColors = false;
+            groundMat.needsUpdate = true;
+            // Apply satellite to elevated meshes too
+            for (const em of elevatedMeshes) {
+              em.material.map = tex;
+              em.material.vertexColors = false;
+              em.material.color.set(0xffffff);
+              em.material.needsUpdate = true;
+            }
+          }
+        });
+        tex.colorSpace = T.SRGBColorSpace;
+        tex.minFilter = T.LinearFilter;
+        tex.magFilter = T.LinearFilter;
+        tex.wrapS = T.ClampToEdgeWrapping;
+        tex.wrapT = T.ClampToEdgeWrapping;
+      } catch(e) {
+        console.warn('Satellite texture not available:', e);
+      }
+    })();
+
+    // 3D overlay mode switcher — called by the overlay button
+    function set3dOverlayMode(mode) {
+      if (mode === 'off') {
+        // Satellite texture (or surface colors as fallback)
+        if (satelliteTexture) {
+          groundMat.map = satelliteTexture;
+          groundMat.vertexColors = false;
+          // Apply satellite to elevated meshes too
+          for (const em of elevatedMeshes) {
+            em.material.map = satelliteTexture;
+            em.material.vertexColors = false;
+            em.material.color.set(0xffffff);
+            em.material.needsUpdate = true;
+          }
+        } else {
+          groundMat.map = null;
+          groundMat.vertexColors = true;
+          groundGeom.setAttribute('color', new T.Float32BufferAttribute(surfaceColors, 3));
+          // Restore type colors on elevated meshes
+          for (const em of elevatedMeshes) {
+            em.material.map = null;
+            em.material.vertexColors = false;
+            em.material.color.copy(em.userData.typeColor);
+            em.material.needsUpdate = true;
+          }
+        }
+      } else if (mode === 'heights') {
+        groundMat.map = null;
+        groundMat.vertexColors = true;
+        groundGeom.setAttribute('color', new T.Float32BufferAttribute(heightColors, 3));
+        // Apply height colors to elevated meshes
+        for (const em of elevatedMeshes) {
+          em.material.map = null;
+          em.material.color.set(0xffffff);
+          em.material.vertexColors = true;
+          em.geometry.setAttribute('color', em.userData.heightColors);
+          em.material.needsUpdate = true;
+        }
+      } else if (mode === 'surface') {
+        groundMat.map = null;
+        groundMat.vertexColors = true;
+        groundGeom.setAttribute('color', new T.Float32BufferAttribute(surfaceColors, 3));
+        // Restore type colors on elevated meshes
+        for (const em of elevatedMeshes) {
+          em.material.map = null;
+          em.material.vertexColors = false;
+          em.material.color.copy(em.userData.typeColor);
+          em.material.needsUpdate = true;
+        }
+      }
+      groundMat.needsUpdate = true;
+
+      // Update 3D legend to match overlay mode (same as 2D)
+      if (mode === 'off') {
+        legend3d.style.display = 'none';
+      } else if (mode === 'heights') {
+        legend3d.style.display = '';
+        legend3d.innerHTML = '<div style="font-weight:600;margin-bottom:4px;">Height Above Ground</div>' +
+          '<div><span style="display:inline-block;width:12px;height:12px;border-radius:2px;background:rgba(0,0,0,0);border:1px dashed #999;vertical-align:middle;margin-right:6px;"></span>&lt;1.5m (ground)</div>' +
+          '<div><span style="display:inline-block;width:12px;height:12px;border-radius:2px;background:#00b300;vertical-align:middle;margin-right:6px;"></span>1.5-3m (shrubs)</div>' +
+          '<div><span style="display:inline-block;width:12px;height:12px;border-radius:2px;background:#ccb300;vertical-align:middle;margin-right:6px;"></span>3-6m (small trees)</div>' +
+          '<div><span style="display:inline-block;width:12px;height:12px;border-radius:2px;background:#ff6600;vertical-align:middle;margin-right:6px;"></span>6-12m (trees/buildings)</div>' +
+          '<div><span style="display:inline-block;width:12px;height:12px;border-radius:2px;background:#e60000;vertical-align:middle;margin-right:6px;"></span>12m+ (tall trees)</div>';
+      } else if (mode === 'surface') {
+        legend3d.style.display = '';
+        legend3d.innerHTML = '<div style="font-weight:600;margin-bottom:4px;">Surface Type</div>' +
+          '<div><span style="display:inline-block;width:12px;height:12px;border-radius:2px;background:#c2b280;vertical-align:middle;margin-right:6px;"></span>Ground</div>' +
+          '<div><span style="display:inline-block;width:12px;height:12px;border-radius:2px;background:#8ccc4d;vertical-align:middle;margin-right:6px;"></span>Low Vegetation</div>' +
+          '<div><span style="display:inline-block;width:12px;height:12px;border-radius:2px;background:#4da633;vertical-align:middle;margin-right:6px;"></span>Medium Vegetation</div>' +
+          '<div><span style="display:inline-block;width:12px;height:12px;border-radius:2px;background:#1a731f;vertical-align:middle;margin-right:6px;"></span>Trees</div>' +
+          '<div><span style="display:inline-block;width:12px;height:12px;border-radius:2px;background:#bf3326;vertical-align:middle;margin-right:6px;"></span>Buildings</div>' +
+          '<div><span style="display:inline-block;width:12px;height:12px;border-radius:2px;background:#4080c8;vertical-align:middle;margin-right:6px;"></span>Water</div>' +
+          '<div><span style="display:inline-block;width:12px;height:12px;border-radius:2px;background:#998c80;vertical-align:middle;margin-right:6px;"></span>Unclassified</div>';
+      }
+    }
+
+    // ── Elevated features: cell-center vertex surface meshes ────
+    // Each cell center is a vertex at its DSM height. Adjacent same-type
+    // cells are connected by triangles, giving smooth diagonal edges.
+    // Skirts drop to ground at type boundaries.
+    const typeColorMap = {
+      'building': COL_BUILDING,
+      'high': COL_HIGH_VEG,
+      'med': COL_MED_VEG,
+      'unknown': COL_UNKNOWN,
+    };
+    const elevatedMeshes = []; // track for overlay mode switching
+
+    // Decode canopy base if available (for raised canopy 3D rendering)
+    let canopyBase = null;
+    if (data.canopy_base_b64) {
+      const cbBytes = Uint8Array.from(atob(data.canopy_base_b64), c => c.charCodeAt(0));
+      const cbFlat = new Float32Array(cbBytes.buffer);
+      canopyBase = [];
+      let cbMin = Infinity, cbMax = -Infinity;
+      for (let r = 0; r < rows; r++) {
+        canopyBase[r] = [];
+        for (let c = 0; c < cols; c++) {
+          canopyBase[r][c] = cbFlat[r * cols + c];
+          if (cbFlat[r * cols + c] > 0) {
+            cbMin = Math.min(cbMin, cbFlat[r * cols + c]);
+            cbMax = Math.max(cbMax, cbFlat[r * cols + c]);
+          }
+        }
+      }
+    } else {
+    }
+
+    for (const [type, baseCol] of Object.entries(typeColorMap)) {
+      const isType = new Uint8Array(rows * cols);
+      let cellCount = 0;
+      for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+          if (cellType[r * cols + c] === type && (dsm[r][c] - gnd[r][c]) > 0.3) {
+            isType[r * cols + c] = 1;
+            cellCount++;
+          }
+        }
+      }
+      if (cellCount === 0) continue;
+
+      const vertices = [];
+      const indices = [];
+
+      // Create a vertex index grid: one vertex per cell center
+      const vertIdx = new Int32Array(rows * cols).fill(-1);
+
+      function getVert(r, c) {
+        const ci = r * cols + c;
+        if (vertIdx[ci] >= 0) return vertIdx[ci];
+        const x = (c + 0.5) * px - gridW / 2;
+        const z = (r + 0.5) * px - gridH / 2;
+        const y = dsm[r][c]; // actual DSM height — every pixel is a vertex
+        const idx = vertices.length / 3;
+        vertices.push(x, y, z);
+        vertIdx[ci] = idx;
+        return idx;
+      }
+
+      function addVert(x, y, z) {
+        const idx = vertices.length / 3;
+        vertices.push(x, y, z);
+        return idx;
+      }
+
+      // Connect adjacent same-type cells with triangles.
+      // For each 2×2 cell block where at least 3 cells are this type,
+      // create triangles connecting their centers.
+      for (let r = 0; r < rows - 1; r++) {
+        for (let c = 0; c < cols - 1; c++) {
+          const tl = isType[r * cols + c];
+          const tr = isType[r * cols + c + 1];
+          const bl = isType[(r+1) * cols + c];
+          const br = isType[(r+1) * cols + c + 1];
+          const count = tl + tr + bl + br;
+          if (count < 3) continue;
+
+          if (tl && tr && bl) {
+            indices.push(getVert(r,c), getVert(r,c+1), getVert(r+1,c));
+          }
+          if (tr && br && bl) {
+            indices.push(getVert(r,c+1), getVert(r+1,c+1), getVert(r+1,c));
+          }
+          // If all 4 present but we only did two triangles above, that's correct.
+          // If only 3 present, we still get one triangle filling the gap.
+          if (count === 4) continue; // both triangles already added
+          if (tl && tr && br && !bl) {
+            indices.push(getVert(r,c), getVert(r,c+1), getVert(r+1,c+1));
+          }
+          if (tl && bl && br && !tr) {
+            indices.push(getVert(r,c), getVert(r+1,c+1), getVert(r+1,c));
+          }
+        }
+      }
+
+      // For vegetation with raised canopy, add a bottom face at canopy_base height
+      const isVegType = (type === 'high' || type === 'med');
+      const topTriCount = indices.length;
+      const bottomVertIdx = new Int32Array(rows * cols).fill(-1);
+      function getBottomVert(r, c) {
+        const ci = r * cols + c;
+        if (bottomVertIdx[ci] >= 0) return bottomVertIdx[ci];
+        const x = (c + 0.5) * px - gridW / 2;
+        const z = (r + 0.5) * px - gridH / 2;
+        const y = canopyBase[r][c];
+        const idx = vertices.length / 3;
+        vertices.push(x, y, z);
+        bottomVertIdx[ci] = idx;
+        return idx;
+      }
+      if (canopyBase && isVegType) {
+        // Duplicate top-face triangles at canopy_base height (reversed winding for downward-facing normal)
+        for (let i = 0; i < topTriCount; i += 3) {
+          const a = indices[i], b = indices[i+1], c = indices[i+2];
+          const aCol = Math.max(0, Math.min(cols-1, Math.round((vertices[a*3] + gridW/2) / px - 0.5)));
+          const aRow = Math.max(0, Math.min(rows-1, Math.round((vertices[a*3+2] + gridH/2) / px - 0.5)));
+          const bCol = Math.max(0, Math.min(cols-1, Math.round((vertices[b*3] + gridW/2) / px - 0.5)));
+          const bRow = Math.max(0, Math.min(rows-1, Math.round((vertices[b*3+2] + gridH/2) / px - 0.5)));
+          const cCol = Math.max(0, Math.min(cols-1, Math.round((vertices[c*3] + gridW/2) / px - 0.5)));
+          const cRow = Math.max(0, Math.min(rows-1, Math.round((vertices[c*3+2] + gridH/2) / px - 0.5)));
+          indices.push(getBottomVert(aRow, aCol), getBottomVert(cRow, cCol), getBottomVert(bRow, bCol));
+        }
+      }
+
+      // Skirt walls: find boundary edges from top-face triangles only,
+      // then connect top edge vertices to bottom edge vertices.
+      const edgeCount = new Map();
+      const edgeKey = (a, b) => a < b ? a + ',' + b : b + ',' + a;
+      for (let i = 0; i < topTriCount; i += 3) {
+        const a = indices[i], b = indices[i+1], c = indices[i+2];
+        const ab = edgeKey(a,b), bc = edgeKey(b,c), ca = edgeKey(c,a);
+        edgeCount.set(ab, (edgeCount.get(ab) || 0) + 1);
+        edgeCount.set(bc, (edgeCount.get(bc) || 0) + 1);
+        edgeCount.set(ca, (edgeCount.get(ca) || 0) + 1);
+      }
+      // Boundary edges appear in exactly 1 triangle
+      for (const [key, count] of edgeCount.entries()) {
+        if (count !== 1) continue;
+        const parts = key.split(',');
+        const ai = parseInt(parts[0]), bi = parseInt(parts[1]);
+        const ax = vertices[ai*3], ay = vertices[ai*3+1], az = vertices[ai*3+2];
+        const bx = vertices[bi*3], by = vertices[bi*3+1], bz = vertices[bi*3+2];
+        const aCol = Math.max(0, Math.min(cols-1, Math.round((ax + gridW/2) / px - 0.5)));
+        const aRow = Math.max(0, Math.min(rows-1, Math.round((az + gridH/2) / px - 0.5)));
+        const bCol = Math.max(0, Math.min(cols-1, Math.round((bx + gridW/2) / px - 0.5)));
+        const bRow = Math.max(0, Math.min(rows-1, Math.round((bz + gridH/2) / px - 0.5)));
+        const wallBaseA = (canopyBase && isVegType) ? canopyBase[aRow][aCol] : gnd[aRow][aCol];
+        const wallBaseB = (canopyBase && isVegType) ? canopyBase[bRow][bCol] : gnd[bRow][bCol];
+        const botA = addVert(ax, wallBaseA, az);
+        const botB = addVert(bx, wallBaseB, bz);
+        indices.push(ai, bi, botB);
+        indices.push(ai, botB, botA);
+      }
+      if (isVegType && canopyBase) {
+        // Log canopy stats for this type
+        let gapCount = 0, solidCount = 0;
+        for (let r = 0; r < rows; r++) {
+          for (let c = 0; c < cols; c++) {
+            if (isType[r * cols + c]) {
+              if (canopyBase[r][c] < dsm[r][c] - 0.5) gapCount++;
+              else solidCount++;
+            }
+          }
+        }
+      }
+
+      const geom = new T.BufferGeometry();
+      geom.setAttribute('position', new T.Float32BufferAttribute(vertices, 3));
+      geom.setIndex(indices);
+      geom.computeVertexNormals();
+
+      // Compute UVs for satellite texture projection (top-down from X/Z)
+      const vertCount = vertices.length / 3;
+      const uvs = new Float32Array(vertCount * 2);
+      const elevHeightColors = new Float32Array(vertCount * 3);
+      for (let i = 0; i < vertCount; i++) {
+        const vx = vertices[i * 3];
+        const vy = vertices[i * 3 + 1]; // DSM height
+        const vz = vertices[i * 3 + 2];
+        uvs[i * 2]     = (vx + gridW / 2) / gridW;
+        uvs[i * 2 + 1] = 1.0 - (vz + gridH / 2) / gridH;
+
+        // Look up ground height at this X/Z for height-above-ground coloring
+        const col = Math.max(0, Math.min(cols - 1, Math.round((vx + gridW / 2) / px)));
+        const row = Math.max(0, Math.min(rows - 1, Math.round((vz + gridH / 2) / px)));
+        const hab = vy - gnd[row][col];
+        const hc = Math.min(Math.max(hab, 0), 15);
+        let hr = 0, hg = 0, hb = 0;
+        if (hc < 1.5) { hr = 0.5; hg = 0.7; hb = 0.4; }
+        else if (hc < 3) { const t = (hc-1.5)/1.5; hr = t*0.6; hg = 0.7; }
+        else if (hc < 6) { const t = (hc-3)/3; hr = 0.6+t*0.4; hg = 0.7-t*0.3; }
+        else if (hc < 12) { const t = (hc-6)/6; hr = 1.0; hg = 0.4-t*0.4; }
+        else { hr = 0.9; hg = 0; }
+        elevHeightColors[i * 3]     = hr;
+        elevHeightColors[i * 3 + 1] = hg;
+        elevHeightColors[i * 3 + 2] = hb;
+      }
+      geom.setAttribute('uv', new T.Float32BufferAttribute(uvs, 2));
+
+      const typeColor = new T.Color(baseCol[0], baseCol[1], baseCol[2]);
+      const mat = new T.MeshLambertMaterial({ color: typeColor, side: T.DoubleSide });
+      const mesh = new T.Mesh(geom, mat);
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      mesh.userData.typeColor = typeColor.clone();
+      mesh.userData.heightColors = new T.Float32BufferAttribute(elevHeightColors, 3);
+      scene.add(mesh);
+      elevatedMeshes.push(mesh);
+    }
+
+    // Sun light
+    const sunBelowHorizon = data.sun_elevation <= 2;
+    const sunAz = data.sun_azimuth * Math.PI / 180;
+    const sunEl = sunBelowHorizon ? 0 : data.sun_elevation * Math.PI / 180;
+    const sunDist = diag * 0.8;
+    const sunX = sunBelowHorizon ? 0 : sunDist * Math.sin(sunAz) * Math.cos(sunEl);
+    const sunY = sunBelowHorizon ? -100 : sunDist * Math.sin(sunEl);
+    const sunZ = sunBelowHorizon ? 0 : -sunDist * Math.cos(sunAz) * Math.cos(sunEl);
+
+    const sunLight = new T.DirectionalLight(0xfff5e6, sunBelowHorizon ? 0 : 1.5);
+    sunLight.position.set(sunX, sunY, sunZ);
+    sunLight.target.position.set(0, 0, 0);
+    sunLight.castShadow = true;
+    sunLight.shadow.mapSize.width = 2048;
+    sunLight.shadow.mapSize.height = 2048;
+    const shadowCam = diag * 0.6;
+    sunLight.shadow.camera.left = -shadowCam;
+    sunLight.shadow.camera.right = shadowCam;
+    sunLight.shadow.camera.top = shadowCam;
+    sunLight.shadow.camera.bottom = -shadowCam;
+    sunLight.shadow.camera.near = 1;
+    sunLight.shadow.camera.far = sunDist * 3;
+    sunLight.shadow.bias = -0.001;
+    scene.add(sunLight);
+    scene.add(sunLight.target);
+
+    // Sun marker
+    const sunSphere = new T.Mesh(
+      new T.SphereGeometry(3, 16, 16),
+      new T.MeshBasicMaterial({ color: 0xffdd44 })
+    );
+    sunSphere.position.set(sunX, sunY, sunZ);
+    scene.add(sunSphere);
+
+    // Ambient light (brighter when sun is down so terrain is visible)
+    const ambientLight = new T.AmbientLight(0x6688cc, sunBelowHorizon ? 0.8 : 0.4);
+    scene.add(ambientLight);
+
+    // ── Zone polygons on terrain ────────────────────────────────
+    if (data.zones && data.zones.length > 0 && data.site_lat != null) {
+      const siteLat = data.site_lat;
+      const siteLng = data.site_lng;
+      const mPerDegLat = 111320.0;
+      const mPerDegLng = 111320.0 * Math.cos(siteLat * Math.PI / 180);
+
+      // Helper: look up terrain height at 3D (x, z) position
+      function getTerrainY(x3d, z3d, useDsm) {
+        const col = (x3d + gridW / 2) / px;
+        const row = (z3d + gridH / 2) / px;
+        const c = Math.max(0, Math.min(cols - 1, Math.round(col)));
+        const r = Math.max(0, Math.min(rows - 1, Math.round(row)));
+        return useDsm ? dsm[r][c] : gnd[r][c];
+      }
+
+      for (const zone of data.zones) {
+        if (!zone.polygon || zone.polygon.length < 3) continue;
+        const isDsmZone = zone.surface === 'dsm';
+
+        // Convert lat/lng polygon to 3D coordinates
+        const pts3d = [];
+        for (const pt of zone.polygon) {
+          const lat = pt[0], lng = pt[1];
+          const dx = (lng - siteLng) * mPerDegLng;
+          const dy = (lat - siteLat) * mPerDegLat;
+          const x3d = dx;
+          const z3d = -dy;
+          const y3d = getTerrainY(x3d, z3d, isDsmZone) + 0.3;
+          pts3d.push(new T.Vector3(x3d, y3d, z3d));
+        }
+        // Close the loop
+        pts3d.push(pts3d[0].clone());
+
+        // Parse zone color
+        const zColor = new T.Color(zone.color || '#2196F3');
+
+        // Zone outline — thick colored line
+        const lineGeom = new T.BufferGeometry().setFromPoints(pts3d);
+        const lineMat = new T.LineBasicMaterial({
+          color: zColor,
+          linewidth: 2,
+        });
+        const line = new T.Line(lineGeom, lineMat);
+        scene.add(line);
+
+        // Zone fill — semi-transparent polygon on terrain
+        if (pts3d.length >= 4) { // need at least 3 points + closing point
+          const shape = new T.Shape();
+          // Project to 2D for shape (x, z plane), then extrude flat
+          // ShapeGeometry creates in XY plane; rotateX(-PI/2) maps Y → -Z,
+          // so we negate z to get correct world-space Z after rotation.
+          shape.moveTo(pts3d[0].x, -pts3d[0].z);
+          for (let i = 1; i < pts3d.length - 1; i++) {
+            shape.lineTo(pts3d[i].x, -pts3d[i].z);
+          }
+          shape.lineTo(pts3d[0].x, -pts3d[0].z);
+
+          const shapeGeom = new T.ShapeGeometry(shape);
+          // Rotate to lie flat on XZ plane
+          shapeGeom.rotateX(-Math.PI / 2);
+          // Drape each vertex onto terrain by setting Y from terrain lookup
+          const fillPos = shapeGeom.attributes.position;
+          for (let vi = 0; vi < fillPos.count; vi++) {
+            const fx = fillPos.getX(vi);
+            const fz = fillPos.getZ(vi);
+            const fy = getTerrainY(fx, fz, isDsmZone) + 0.4;
+            fillPos.setY(vi, fy);
+          }
+          fillPos.needsUpdate = true;
+          shapeGeom.computeVertexNormals();
+          const fillMat = new T.MeshBasicMaterial({
+            color: zColor,
+            transparent: true,
+            opacity: 0.25,
+            side: T.DoubleSide,
+            depthWrite: false,
+          });
+          const fillMesh = new T.Mesh(shapeGeom, fillMat);
+          scene.add(fillMesh);
+        }
+
+        // Zone label as sprite
+        const canvas = document.createElement('canvas');
+        canvas.width = 256;
+        canvas.height = 64;
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = zone.color || '#2196F3';
+        ctx.fillRect(0, 0, 256, 64);
+        ctx.fillStyle = '#fff';
+        ctx.font = 'bold 28px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(zone.name, 128, 32);
+        const tex = new T.CanvasTexture(canvas);
+        const spriteMat = new T.SpriteMaterial({ map: tex, depthTest: false });
+        const sprite = new T.Sprite(spriteMat);
+        // Position label at centroid of zone
+        const cx = pts3d.slice(0, -1).reduce((s, p) => s + p.x, 0) / (pts3d.length - 1);
+        const cz = pts3d.slice(0, -1).reduce((s, p) => s + p.z, 0) / (pts3d.length - 1);
+        const cy = getTerrainY(cx, cz) + 4;
+        sprite.position.set(cx, cy, cz);
+        sprite.scale.set(6, 1.5, 1);
+        scene.add(sprite);
+      }
+    }
+
+    // ── Fly mode toggle ─────────────────────────────────────────────
+    const flyBtn = document.createElement('button');
+    flyBtn.textContent = 'Fly Mode';
+    flyBtn.style.cssText = 'position:absolute;bottom:20px;right:20px;z-index:10;padding:8px 16px;border:none;border-radius:4px;cursor:pointer;font-size:13px;font-weight:500;background:#fff;color:#333;box-shadow:0 2px 6px rgba(0,0,0,0.3);';
+    container.style.position = 'relative';
+    container.appendChild(flyBtn);
+
+    // Fly mode key and mouse handlers
+    function onFlyKeyDown(e) {
+      switch(e.code) {
+        case 'KeyW': case 'ArrowUp':    flyMoveState.forward = true; break;
+        case 'KeyS': case 'ArrowDown':  flyMoveState.backward = true; break;
+        case 'KeyA': case 'ArrowLeft':  flyMoveState.left = true; break;
+        case 'KeyD': case 'ArrowRight': flyMoveState.right = true; break;
+        case 'KeyR': case 'Space':      flyMoveState.up = true; break;
+        case 'KeyF': case 'ShiftLeft':  flyMoveState.down = true; break;
+      }
+    }
+    function onFlyKeyUp(e) {
+      switch(e.code) {
+        case 'KeyW': case 'ArrowUp':    flyMoveState.forward = false; break;
+        case 'KeyS': case 'ArrowDown':  flyMoveState.backward = false; break;
+        case 'KeyA': case 'ArrowLeft':  flyMoveState.left = false; break;
+        case 'KeyD': case 'ArrowRight': flyMoveState.right = false; break;
+        case 'KeyR': case 'Space':      flyMoveState.up = false; break;
+        case 'KeyF': case 'ShiftLeft':  flyMoveState.down = false; break;
+      }
+    }
+    function onFlyWheel(e) {
+      flySpeed = Math.max(5, Math.min(200, flySpeed + (e.deltaY > 0 ? -5 : 5)));
+    }
+    function onFlyMouseDown(e) {
+      if (!flyActive || e.button !== 0) return;
+      flyLooking = true;
+      renderer.domElement.requestPointerLock();
+    }
+    function onFlyMouseUp(e) {
+      if (e.button !== 0) return;
+      flyLooking = false;
+      if (document.pointerLockElement) document.exitPointerLock();
+    }
+    function onFlyMouseMove(e) {
+      if (!flyActive || !flyLooking) return;
+      const dx = e.movementX || 0;
+      const dy = e.movementY || 0;
+      const sensitivity = 0.002;
+      flyEuler.setFromQuaternion(camera.quaternion);
+      flyEuler.y -= dx * sensitivity;
+      flyEuler.x -= dy * sensitivity;
+      flyEuler.x = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, flyEuler.x));
+      camera.quaternion.setFromEuler(flyEuler);
+    }
+
+    flyBtn.addEventListener('click', function() {
+      if (flyActive) {
+        // Switch back to orbit
+        flyActive = false;
+        flyLooking = false;
+        if (document.pointerLockElement) document.exitPointerLock();
+        renderer.domElement.removeEventListener('mousedown', onFlyMouseDown);
+        renderer.domElement.removeEventListener('mouseup', onFlyMouseUp);
+        renderer.domElement.removeEventListener('mousemove', onFlyMouseMove);
+        document.removeEventListener('keydown', onFlyKeyDown);
+        document.removeEventListener('keyup', onFlyKeyUp);
+        renderer.domElement.removeEventListener('wheel', onFlyWheel);
+        renderer.domElement.style.cursor = '';
+        orbitControls.enabled = true;
+        orbitControls.target.set(0, 5, 0);
+        camera.position.set(
+          camDist * Math.sin(camAz) * Math.cos(camElev),
+          camDist * Math.sin(camElev),
+          -camDist * Math.cos(camAz) * Math.cos(camElev)
+        );
+        camera.up.set(0, 1, 0);
+        camera.quaternion.identity();
+        camera.lookAt(0, 0, 0);
+        orbitControls.update();
+        flyBtn.textContent = 'Fly Mode';
+        flyBtn.style.background = '#fff';
+        flyBtn.style.color = '#333';
+        showStatus('Orbit mode — drag to rotate, scroll to zoom', 3000);
+      } else {
+        // Switch to fly mode
+        flyActive = true;
+        orbitControls.enabled = false;
+        flyEuler.setFromQuaternion(camera.quaternion);
+        renderer.domElement.addEventListener('mousedown', onFlyMouseDown);
+        renderer.domElement.addEventListener('mouseup', onFlyMouseUp);
+        renderer.domElement.addEventListener('mousemove', onFlyMouseMove);
+        document.addEventListener('keydown', onFlyKeyDown);
+        document.addEventListener('keyup', onFlyKeyUp);
+        renderer.domElement.addEventListener('wheel', onFlyWheel);
+        _getDelta(); // reset delta timer
+        flyBtn.textContent = 'Orbit Mode';
+        flyBtn.style.background = '#5c3d99';
+        flyBtn.style.color = '#fff';
+        showStatus('Hold mouse to look · WASD move · R/F up/down · Scroll speed', 5000);
+      }
+    });
+
+    // ── 3D Legend overlay ─────────────────────────────────────────
+    const legend3d = document.createElement('div');
+    legend3d.style.cssText = 'position:absolute;top:12px;left:12px;z-index:10;background:rgba(30,30,40,0.85);color:#fff;padding:10px 14px;border-radius:6px;font-size:12px;line-height:1.8;pointer-events:none;';
+    // Start hidden — legend only shows for heights/surface modes (matches 2D)
+    legend3d.style.display = overlayMode === 'off' ? 'none' : '';
+    // Set initial content based on current overlay mode
+    if (overlayMode === 'surface') {
+      legend3d.innerHTML = '<div style="font-weight:600;margin-bottom:4px;">Surface Type</div>' +
+        '<div><span style="display:inline-block;width:12px;height:12px;border-radius:2px;background:#c2b280;vertical-align:middle;margin-right:6px;"></span>Ground</div>' +
+        '<div><span style="display:inline-block;width:12px;height:12px;border-radius:2px;background:#8ccc4d;vertical-align:middle;margin-right:6px;"></span>Low Vegetation</div>' +
+        '<div><span style="display:inline-block;width:12px;height:12px;border-radius:2px;background:#4da633;vertical-align:middle;margin-right:6px;"></span>Medium Vegetation</div>' +
+        '<div><span style="display:inline-block;width:12px;height:12px;border-radius:2px;background:#1a731f;vertical-align:middle;margin-right:6px;"></span>Trees</div>' +
+        '<div><span style="display:inline-block;width:12px;height:12px;border-radius:2px;background:#bf3326;vertical-align:middle;margin-right:6px;"></span>Buildings</div>' +
+        '<div><span style="display:inline-block;width:12px;height:12px;border-radius:2px;background:#4080c8;vertical-align:middle;margin-right:6px;"></span>Water</div>' +
+        '<div><span style="display:inline-block;width:12px;height:12px;border-radius:2px;background:#998c80;vertical-align:middle;margin-right:6px;"></span>Unclassified</div>';
+    } else if (overlayMode === 'heights') {
+      legend3d.innerHTML = '<div style="font-weight:600;margin-bottom:4px;">Height Above Ground</div>' +
+        '<div><span style="display:inline-block;width:12px;height:12px;border-radius:2px;background:rgba(0,0,0,0);border:1px dashed #999;vertical-align:middle;margin-right:6px;"></span>&lt;1.5m (ground)</div>' +
+        '<div><span style="display:inline-block;width:12px;height:12px;border-radius:2px;background:#00b300;vertical-align:middle;margin-right:6px;"></span>1.5-3m (shrubs)</div>' +
+        '<div><span style="display:inline-block;width:12px;height:12px;border-radius:2px;background:#ccb300;vertical-align:middle;margin-right:6px;"></span>3-6m (small trees)</div>' +
+        '<div><span style="display:inline-block;width:12px;height:12px;border-radius:2px;background:#ff6600;vertical-align:middle;margin-right:6px;"></span>6-12m (trees/buildings)</div>' +
+        '<div><span style="display:inline-block;width:12px;height:12px;border-radius:2px;background:#e60000;vertical-align:middle;margin-right:6px;"></span>12m+ (tall trees)</div>';
+    }
+    container.appendChild(legend3d);
+
+    // ── 3D Compass (axes widget) ───────────────────────────────────
+    const compassDiv = document.createElement('div');
+    compassDiv.style.cssText = 'position:absolute;top:12px;right:12px;z-index:10;width:90px;height:90px;pointer-events:none;';
+    container.appendChild(compassDiv);
+
+    const compassRenderer = new T.WebGLRenderer({ alpha: true, antialias: true });
+    compassRenderer.setSize(90, 90);
+    compassRenderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    compassDiv.appendChild(compassRenderer.domElement);
+
+    const compassScene = new T.Scene();
+    const compassCamera = new T.PerspectiveCamera(50, 1, 0.1, 10);
+    compassCamera.position.set(0, 0, 3);
+    compassCamera.lookAt(0, 0, 0);
+
+    // Axis arrows: N=-Z (red), E=+X (green), Up=+Y (blue)
+    const axLen = 0.8;
+    function makeArrow(dir, color, label) {
+      const arrow = new T.ArrowHelper(dir, new T.Vector3(0,0,0), axLen, color, 0.2, 0.12);
+      compassScene.add(arrow);
+      // Label sprite
+      const canvas = document.createElement('canvas');
+      canvas.width = 128; canvas.height = 64;
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#' + color.toString(16).padStart(6, '0');
+      ctx.font = 'bold 44px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(label, 64, 32);
+      const tex = new T.CanvasTexture(canvas);
+      const spMat = new T.SpriteMaterial({ map: tex, depthTest: false });
+      const sp = new T.Sprite(spMat);
+      sp.scale.set(0.6, 0.3, 1);
+      sp.position.copy(dir.clone().multiplyScalar(axLen + 0.3));
+      compassScene.add(sp);
+    }
+    makeArrow(new T.Vector3(0, 0, -1), 0xe53935, 'N');  // North = -Z
+    makeArrow(new T.Vector3(1, 0, 0), 0x4caf50, 'E');   // East = +X
+    makeArrow(new T.Vector3(0, 1, 0), 0x2196f3, 'Up');  // Up = +Y
+
+    compassScene.add(new T.AmbientLight(0xffffff, 1.0));
+
+    function updateCompass() {
+      // Rotate compass scene to match main camera view.
+      // Keep compass camera fixed; rotate arrows to show orientation.
+      const q = camera.quaternion.clone();
+      // The compass scene should appear as if viewed from the camera's perspective
+      // We apply the inverse of the camera rotation to the scene
+      compassScene.quaternion.copy(q).invert();
+      compassRenderer.render(compassScene, compassCamera);
+    }
+
+    // ── Animation loop ──────────────────────────────────────────────
+    function animate() {
+      requestAnimationFrame(animate);
+      if (flyActive) {
+        const dt = _getDelta();
+        const moveDistance = flySpeed * dt;
+        const direction = new T.Vector3();
+        camera.getWorldDirection(direction);
+        const right = new T.Vector3().crossVectors(direction, camera.up).normalize();
+        if (flyMoveState.forward) camera.position.addScaledVector(direction, moveDistance);
+        if (flyMoveState.backward) camera.position.addScaledVector(direction, -moveDistance);
+        if (flyMoveState.left) camera.position.addScaledVector(right, -moveDistance);
+        if (flyMoveState.right) camera.position.addScaledVector(right, moveDistance);
+        if (flyMoveState.up) camera.position.y += moveDistance;
+        if (flyMoveState.down) camera.position.y -= moveDistance;
+      } else {
+        orbitControls.update();
+      }
+      renderer.render(scene, camera);
+      updateCompass();
+    }
+    _lastTime = performance.now();
+    animate();
+
+    // Resize handler
+    const resizeObs = new ResizeObserver(() => {
+      const w = container.clientWidth;
+      const h = container.clientHeight;
+      camera.aspect = w / h;
+      camera.updateProjectionMatrix();
+      renderer.setSize(w, h);
+    });
+    resizeObs.observe(container);
+
+    viewer3d = { scene, camera, renderer, orbitControls, resizeObs, sunLight, sunSphere, ambientLight, diag, set3dOverlayMode, compassRenderer };
+  }
+
+  async function update3dSunPosition() {
+    if (!viewer3d) return;
+    try {
+      // Ask backend for sun position at offset time (sun_only skips expensive raytrace)
+      const data = await callWS('solar_shade/get_shadow_preview', { hour_offset: currentHourOffset, sun_only: true });
+      if (!data.available) return;
+
+      const timeLabel = data.time_label || 'Now';
+      document.getElementById('time-label').textContent =
+        currentHourOffset === 0 ? 'Now' : timeLabel;
+
+      if (data.sun_below_horizon) {
+        // Move sun below ground
+        viewer3d.sunLight.position.set(0, -100, 0);
+        viewer3d.sunSphere.position.set(0, -100, 0);
+        viewer3d.sunLight.intensity = 0;
+        viewer3d.ambientLight.intensity = 0.8;
+        return;
+      }
+
+      // Reposition sun in 3D scene
+      const azRad = data.azimuth * Math.PI / 180;
+      const elRad = Math.max(data.elevation, 5) * Math.PI / 180;
+      const dist = viewer3d.diag * 0.8;
+      const sx = dist * Math.sin(azRad) * Math.cos(elRad);
+      const sy = dist * Math.sin(elRad);
+      const sz = -dist * Math.cos(azRad) * Math.cos(elRad);
+
+      viewer3d.sunLight.position.set(sx, sy, sz);
+      viewer3d.sunSphere.position.set(sx, sy, sz);
+      viewer3d.sunLight.intensity = 1.5;
+      viewer3d.ambientLight.intensity = 0.4;
+
+    } catch(err) {
+      console.warn('Failed to update 3D sun:', err);
+    }
+  }
+
+})();
+</script>
+</body>
+</html>
