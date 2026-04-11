@@ -5,11 +5,11 @@ from __future__ import annotations
 import base64
 import io
 import logging
-import math
 from datetime import timedelta
 from typing import Any
 
 import aiohttp
+import asyncio
 import numpy as np
 import voluptuous as vol
 
@@ -31,7 +31,7 @@ from .const import (
     DEFAULT_ENABLE_OPEN_METEO,
     DOMAIN,
 )
-from .geo import latlon_to_utm, utm_to_latlon
+from .geo import latlon_to_utm
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -261,22 +261,28 @@ def _get_site(hass: HomeAssistant):
 
 
 def _site_bounds_latlng(site):
-    """Get site bounds as lat/lng."""
-    lat = site.latitude
-    lng = site.longitude
-    m_per_deg_lat = 111320.0
-    m_per_deg_lng = 111320.0 * math.cos(math.radians(lat))
+    """Get site bounds as lat/lng using proper CRS inverse projection."""
+    lat, lng = site.latitude, site.longitude
+
+    if site.native_epsg:
+        from .geo import latlon_to_epsg, epsg_to_latlon
+        center_e, center_n = latlon_to_epsg(lat, lng, site.native_epsg)
+        epsg = site.native_epsg
+    else:
+        center_e, center_n = latlon_to_utm(lat, lng)[1:3]
+        zone = int((lng + 180) / 6) + 1
+        epsg = (32600 + zone) if lat >= 0 else (32700 + zone)
+        from .geo import epsg_to_latlon
+
+    s_lat, s_lon = epsg_to_latlon(center_e + site.x_min_m, center_n + site.y_min_m, epsg)
+    n_lat, n_lon = epsg_to_latlon(center_e + site.x_max_m, center_n + site.y_max_m, epsg)
     return {
-        "south": lat + site.y_min_m / m_per_deg_lat,
-        "north": lat + site.y_max_m / m_per_deg_lat,
-        "west": lng + site.x_min_m / m_per_deg_lng,
-        "east": lng + site.x_max_m / m_per_deg_lng,
+        "south": s_lat,
+        "north": n_lat,
+        "west": s_lon,
+        "east": n_lon,
     }
 
-
-# Use shared UTM functions from geo.py
-_latlon_to_utm = latlon_to_utm
-_utm_to_latlon = utm_to_latlon
 
 
 def _calc_sun_position(lat: float, lng: float, when) -> tuple[float, float]:
@@ -304,7 +310,7 @@ def _calc_sun_position(lat: float, lng: float, when) -> tuple[float, float]:
     try:
         az = astral_azimuth(observer, when)
         el = astral_elevation(observer, when)
-    except Exception:
+    except ValueError:
         # Fallback for edge cases (e.g., midnight sun / polar night)
         az = 180.0
         el = -90.0
@@ -473,7 +479,7 @@ async def ws_get_dsm_image(
 ) -> None:
     """Return DSM height visualization as a PNG data URL with geo bounds."""
     site = _get_site(hass)
-    if site is None or site.rows <= 1:
+    if site is None or site.is_placeholder:
         connection.send_result(msg["id"], {"available": False})
         return
 
@@ -513,7 +519,7 @@ async def ws_get_shadow_preview(
     sun_only: if True, skip raytraced render and return only sun position (for 3D view).
     """
     site = _get_site(hass)
-    if site is None or site.rows <= 1:
+    if site is None or site.is_placeholder:
         connection.send_result(msg["id"], {"available": False})
         return
 
@@ -589,7 +595,7 @@ async def ws_get_shadow_preview(
 
     try:
         image_url, shade_fraction = await hass.async_add_executor_job(render)
-    except Exception:
+    except (ValueError, RuntimeError, TypeError):
         _LOGGER.exception("Failed to render shadow preview")
         connection.send_result(msg["id"], {"available": False, "reason": "render_error"})
         return
@@ -622,7 +628,7 @@ async def ws_get_dsm_data(
 ) -> None:
     """Return raw DSM/DTM height data for 3D rendering."""
     site = _get_site(hass)
-    if site is None or site.rows <= 1:
+    if site is None or site.is_placeholder:
         connection.send_result(msg["id"], {"available": False})
         return
 
@@ -734,7 +740,7 @@ async def ws_get_shade_timeline(
     (computed via astral), enabling a daily shade forecast chart.
     """
     site = _get_site(hass)
-    if site is None or site.rows <= 1 or not site.zones:
+    if site is None or site.is_placeholder or not site.zones:
         connection.send_result(msg["id"], {"available": False})
         return
 
@@ -763,7 +769,7 @@ async def ws_get_shade_timeline(
             sun_times = astral_sun(observer, today, tzinfo=tz)
             sunrise_hour = sun_times["sunrise"].hour
             sunset_hour = sun_times["sunset"].hour + 1  # include sunset hour
-        except Exception:
+        except ValueError:
             # Fallback if astral can't compute (e.g., polar regions)
             sunrise_hour = 6
             sunset_hour = 20
@@ -787,7 +793,6 @@ async def ws_get_shade_timeline(
                     timeline[z.zone_id].append(0.0)
                 continue
 
-            from .const import CONF_CANOPY_MODEL, DEFAULT_CANOPY_MODEL
             canopy_model = _canopy_model
             fracs = compute_zone_shade_fractions(site, azimuth, elevation, canopy_model=canopy_model)
             for z in site.zones:
@@ -832,24 +837,28 @@ async def ws_get_satellite_image(
     Used as a ground texture in the 3D viewer.
     """
     site = _get_site(hass)
-    if site is None or site.rows <= 1:
+    if site is None or site.is_placeholder:
         connection.send_result(msg["id"], {"available": False})
         return
 
-    # Use the same UTM projection as the LiDAR data for the satellite bbox.
-    # The LiDAR grid is square in UTM meters (center ± radius). If we request
-    # in WGS84 (4326), the degree-space bbox is rectangular (longitude degrees
-    # are shorter than latitude degrees), causing the Esri API to silently
-    # extend the bbox to match the square pixel dimensions — shifting the image.
-    # By requesting in UTM, bbox and pixels are both square — no adjustment.
-    zone, center_e, center_n = _latlon_to_utm(site.latitude, site.longitude)
-    northern = site.latitude >= 0
-    utm_epsg = (32600 + zone) if northern else (32700 + zone)
+    # Use a projected CRS for the satellite bbox so pixels stay square.
+    # If the site was built from a national CRS (SWEREF99 TM, D96/TM, …)
+    # use that CRS directly; otherwise fall back to UTM.
+    if site.native_epsg:
+        from .geo import latlon_to_epsg
+        center_e, center_n = latlon_to_epsg(
+            site.latitude, site.longitude, site.native_epsg,
+        )
+        proj_epsg = site.native_epsg
+    else:
+        zone, center_e, center_n = latlon_to_utm(site.latitude, site.longitude)
+        northern = site.latitude >= 0
+        proj_epsg = (32600 + zone) if northern else (32700 + zone)
 
-    utm_x_min = center_e + site.x_min_m
-    utm_y_min = center_n + site.y_min_m
-    utm_x_max = center_e + site.x_max_m
-    utm_y_max = center_n + site.y_max_m
+    proj_x_min = center_e + site.x_min_m
+    proj_y_min = center_n + site.y_min_m
+    proj_x_max = center_e + site.x_max_m
+    proj_y_max = center_n + site.y_max_m
 
     # Esri World Imagery export endpoint
     export_url = (
@@ -862,9 +871,9 @@ async def ws_get_satellite_image(
     img_h = min(site.rows, 1024)
 
     params = {
-        "bbox": f"{utm_x_min},{utm_y_min},{utm_x_max},{utm_y_max}",
-        "bboxSR": str(utm_epsg),
-        "imageSR": str(utm_epsg),
+        "bbox": f"{proj_x_min},{proj_y_min},{proj_x_max},{proj_y_max}",
+        "bboxSR": str(proj_epsg),
+        "imageSR": str(proj_epsg),
         "size": f"{img_w},{img_h}",
         "format": "png",
         "f": "image",
@@ -887,7 +896,7 @@ async def ws_get_satellite_image(
                 b64 = base64.b64encode(image_bytes).decode("ascii")
                 data_url = f"data:image/png;base64,{b64}"
 
-    except Exception as err:
+    except (aiohttp.ClientError, asyncio.TimeoutError, OSError, ValueError) as err:
         _LOGGER.warning("Failed to fetch satellite imagery: %s", err)
         connection.send_result(msg["id"], {"available": False})
         return
@@ -914,7 +923,7 @@ async def ws_get_surface_type_image(
     Colors match the 3D view: tan=ground, green=vegetation, red=buildings.
     """
     site = _get_site(hass)
-    if site is None or site.rows <= 1 or site.classification is None:
+    if site is None or site.is_placeholder or site.classification is None:
         connection.send_result(msg["id"], {"available": False})
         return
 

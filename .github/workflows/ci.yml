@@ -20,7 +20,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - name: Install dependencies
         run: |
-          pip install pytest numpy astral
+          pip install pytest numpy astral pyproj laspy lazrs pyyaml pillow
       - name: Run tests
         run: |
           python -m pytest tests/ -x -q

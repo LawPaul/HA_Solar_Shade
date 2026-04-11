@@ -15,6 +15,7 @@ from .const import (
     CONF_DIFFUSE_ENTITY,
     CONF_DIFFUSE_FRACTION,
     CONF_DOWNLOAD_RADIUS,
+    CONF_DSM_PROVIDER,
     CONF_DSM_SOURCE,
     CONF_DSM_GAP_FILL,
     CONF_ENABLE_OPEN_METEO,
@@ -22,6 +23,7 @@ from .const import (
     CONF_LIDAR_FILE,
     CONF_LIDAR_PROJECT,
     CONF_LONGITUDE,
+    CONF_MANUAL_EPSG,
     CONF_MIN_SHADOW_HEIGHT,
     CONF_CANOPY_MODEL,
     CONF_MIN_CELL_SIZE,
@@ -35,12 +37,20 @@ from .const import (
     DEFAULT_DIFFUSE_FRACTION,
     DEFAULT_DOWNLOAD_RADIUS,
     DEFAULT_DSM_GAP_FILL,
+    DEFAULT_DSM_PROVIDER,
     DEFAULT_ENABLE_OPEN_METEO,
+    DEFAULT_MANUAL_EPSG,
     DEFAULT_MIN_CELL_SIZE,
     DEFAULT_MIN_SHADOW_HEIGHT,
     DEFAULT_SHADE_METHOD,
     DEFAULT_UPDATE_INTERVAL,
     DOMAIN,
+    DSM_PROVIDER_AUTO,
+    DSM_PROVIDER_IGN,
+    DSM_PROVIDER_NRW,
+    DSM_PROVIDER_PDOK,
+    DSM_PROVIDER_SWISSTOPO,
+    DSM_PROVIDER_USGS,
     DSM_SOURCE_AUTO,
     DSM_SOURCE_LAZ,
     CANOPY_MODEL_RAISED,
@@ -287,12 +297,28 @@ class SolarShadeOptionsFlow(config_entries.OptionsFlow):
                     default=current.get(CONF_DSM_GAP_FILL, DEFAULT_DSM_GAP_FILL),
                 ): selector.BooleanSelector(),
                 vol.Optional(
+                    CONF_DSM_PROVIDER,
+                    default=current.get(CONF_DSM_PROVIDER, DEFAULT_DSM_PROVIDER),
+                ): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=[
+                            selector.SelectOptionDict(value=DSM_PROVIDER_AUTO, label="Auto-detect from location"),
+                            selector.SelectOptionDict(value=DSM_PROVIDER_USGS, label="USGS 3DEP (United States)"),
+                            selector.SelectOptionDict(value=DSM_PROVIDER_IGN, label="IGN LiDAR HD (France)"),
+                            selector.SelectOptionDict(value=DSM_PROVIDER_SWISSTOPO, label="swisstopo swissSURFACE3D (Switzerland)"),
+                            selector.SelectOptionDict(value=DSM_PROVIDER_NRW, label="NRW 3D-Messdaten (Germany)"),
+                            selector.SelectOptionDict(value=DSM_PROVIDER_PDOK, label="PDOK 3D (Netherlands)"),
+                        ],
+                        mode=selector.SelectSelectorMode.DROPDOWN,
+                    )
+                ),
+                vol.Optional(
                     CONF_DSM_SOURCE,
                     default=current.get(CONF_DSM_SOURCE, DSM_SOURCE_AUTO),
                 ): selector.SelectSelector(
                     selector.SelectSelectorConfig(
                         options=[
-                            selector.SelectOptionDict(value=DSM_SOURCE_AUTO, label="Auto-download from USGS"),
+                            selector.SelectOptionDict(value=DSM_SOURCE_AUTO, label="Auto-download"),
                             selector.SelectOptionDict(value=DSM_SOURCE_LAZ, label="Manual LAZ file"),
                         ],
                         mode=selector.SelectSelectorMode.DROPDOWN,
@@ -304,6 +330,15 @@ class SolarShadeOptionsFlow(config_entries.OptionsFlow):
                 ): selector.TextSelector(
                     selector.TextSelectorConfig(
                         type=selector.TextSelectorType.TEXT,
+                    )
+                ),
+                vol.Optional(
+                    CONF_MANUAL_EPSG,
+                    default=current.get(CONF_MANUAL_EPSG, DEFAULT_MANUAL_EPSG),
+                ): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=0, max=99999, step=1,
+                        mode=selector.NumberSelectorMode.BOX,
                     )
                 ),
             }

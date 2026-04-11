@@ -9,6 +9,8 @@ from custom_components.solar_shade.shadow_engine import (
     compute_adjusted_radiation,
     compute_shadow_map,
     compute_zone_shade_fractions,
+    save_processed_dsm,
+    load_site_model,
 )
 
 
@@ -336,5 +338,42 @@ class TestRaisedCanopy:
         )
         assert fracs_solid["z"]["average"] > 0.3
         assert fracs_raised["z"]["average"] < fracs_solid["z"]["average"]
+
+
+class TestSaveLoadNativeEPSG:
+    """Test that native_epsg persists through save/load roundtrip."""
+
+    def test_roundtrip_with_native_epsg(self, tmp_path):
+        """native_epsg should survive NPZ roundtrip."""
+        site = SiteModel(
+            dsm=np.ones((5, 5), dtype=np.float32),
+            resolution=1.0,
+            latitude=59.0,
+            longitude=18.0,
+            native_epsg=3006,
+            x_min_m=-10.0,
+            y_min_m=-10.0,
+            x_max_m=10.0,
+            y_max_m=10.0,
+        )
+        save_processed_dsm(site, str(tmp_path))
+        loaded = load_site_model(str(tmp_path))
+        assert loaded is not None
+        assert loaded.native_epsg == 3006
+        assert loaded.latitude == 59.0
+        assert loaded.longitude == 18.0
+
+    def test_roundtrip_without_native_epsg(self, tmp_path):
+        """Legacy NPZ files (no native_epsg) should default to 0."""
+        site = SiteModel(
+            dsm=np.ones((5, 5), dtype=np.float32),
+            resolution=1.0,
+            latitude=32.0,
+            longitude=-95.0,
+        )
+        save_processed_dsm(site, str(tmp_path))
+        loaded = load_site_model(str(tmp_path))
+        assert loaded is not None
+        assert loaded.native_epsg == 0
 
 
