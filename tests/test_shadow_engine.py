@@ -11,6 +11,11 @@ from custom_components.solar_shade.shadow_engine import (
     compute_zone_shade_fractions,
     save_processed_dsm,
     load_site_model,
+    apply_eraser_to_site,
+    save_eraser_mask,
+    load_eraser_mask,
+    delete_eraser_mask,
+    CLASS_GROUND,
 )
 
 
@@ -377,3 +382,105 @@ class TestSaveLoadNativeEPSG:
         assert loaded.native_epsg == 0
 
 
+class TestEraserMask:
+    """Test the terrain eraser feature."""
+
+    def test_apply_eraser_flattens_dsm_to_ground(self):
+        """Erased pixels should have DSM set to DTM value."""
+        dtm = np.full((5, 5), 10.0, dtype=np.float32)
+        dsm = dtm.copy()
+        dsm[2, 2] = 25.0  # a tree
+        dsm[1, 2] = 18.0  # another tree
+
+        site = SiteModel(
+            dsm=dsm, resolution=1.0, dtm=dtm,
+            classification=np.full((5, 5), CLASS_GROUND, dtype=np.uint8),
+        )
+        site.classification[2, 2] = 5  # HIGH_VEG
+        site.classification[1, 2] = 5
+
+        mask = np.zeros((5, 5), dtype=bool)
+        mask[2, 2] = True  # erase just the one tree
+
+        apply_eraser_to_site(site, mask)
+
+        assert site.dsm[2, 2] == 10.0, "Erased pixel should be at ground level"
+        assert site.dsm[1, 2] == 18.0, "Non-erased pixel should be unchanged"
+        assert site.classification[2, 2] == CLASS_GROUND
+
+    def test_eraser_mask_shape_mismatch_is_safe(self):
+        """Wrong-shape mask should not crash or modify the site."""
+        site = SiteModel(
+            dsm=np.ones((5, 5), dtype=np.float32) * 20.0,
+            resolution=1.0,
+            dtm=np.ones((5, 5), dtype=np.float32) * 10.0,
+        )
+        bad_mask = np.zeros((3, 3), dtype=bool)
+        bad_mask[1, 1] = True
+
+        apply_eraser_to_site(site, bad_mask)
+        assert site.dsm[2, 2] == 20.0, "Should be unchanged with wrong shape"
+
+    def test_save_load_delete_eraser_mask(self, tmp_path):
+        """Eraser mask roundtrips through save/load and can be deleted."""
+        mask = np.zeros((10, 10), dtype=bool)
+        mask[3:5, 3:5] = True
+
+        save_eraser_mask(mask, str(tmp_path))
+        loaded = load_eraser_mask(str(tmp_path))
+        assert loaded is not None
+        assert np.array_equal(loaded, mask)
+
+        assert delete_eraser_mask(str(tmp_path)) is True
+        assert load_eraser_mask(str(tmp_path)) is None
+        assert delete_eraser_mask(str(tmp_path)) is False
+
+    def test_load_eraser_mask_missing_returns_none(self, tmp_path):
+        """Loading from a directory with no mask returns None."""
+        assert load_eraser_mask(str(tmp_path)) is None
+
+    def test_eraser_affects_shadow_computation(self):
+        """After erasing a tall feature, it should no longer cast shadow."""
+        # Create a scene with a 20m tall tree at (2,5)
+        ground = np.full((10, 10), 100.0, dtype=np.float32)
+        dsm = ground.copy()
+        dsm[2, 5] = 120.0  # 20m tall tree
+
+        # Compute shadow with the tree
+        shadow_before = compute_shadow_map(
+            dsm, sun_azimuth_deg=180.0, sun_elevation_deg=30.0,
+            pixel_size_m=1.0, ground=ground,
+        )
+        tree_casts_shadow = shadow_before.sum() > 0
+
+        # Now erase the tree
+        site = SiteModel(dsm=dsm, resolution=1.0, dtm=ground)
+        mask = np.zeros((10, 10), dtype=bool)
+        mask[2, 5] = True
+        apply_eraser_to_site(site, mask)
+
+        # Compute shadow after erasing
+        shadow_after = compute_shadow_map(
+            site.dsm, sun_azimuth_deg=180.0, sun_elevation_deg=30.0,
+            pixel_size_m=1.0, ground=ground,
+        )
+
+        assert tree_casts_shadow, "Tree should cast shadow before erasing"
+        assert shadow_after.sum() == 0, "No shadow after erasing the tree"
+
+    def test_eraser_with_canopy_base(self):
+        """Eraser should also reset canopy_base to ground level."""
+        dtm = np.full((5, 5), 10.0, dtype=np.float32)
+        dsm = dtm.copy()
+        dsm[2, 2] = 25.0
+        canopy = dtm.copy()
+        canopy[2, 2] = 18.0  # canopy starts at 18m
+
+        site = SiteModel(
+            dsm=dsm, resolution=1.0, dtm=dtm, canopy_base=canopy,
+        )
+        mask = np.zeros((5, 5), dtype=bool)
+        mask[2, 2] = True
+        apply_eraser_to_site(site, mask)
+
+        assert site.canopy_base[2, 2] == 10.0

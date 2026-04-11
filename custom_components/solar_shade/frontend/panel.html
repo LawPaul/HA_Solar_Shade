@@ -153,6 +153,24 @@
       box-shadow: 0 1px 5px rgba(0,0,0,0.3); cursor: pointer;
       font-size: 12px; border: none;
     }
+    .eraser-controls {
+      display: none; align-items: center; gap: 8px;
+      position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%);
+      z-index: 1000;
+      background: var(--card-background-color, rgba(255,255,255,0.95));
+      backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+      padding: 8px 16px; border-radius: 12px;
+      box-shadow: 0 2px 12px rgba(0,0,0,0.25);
+      font-size: 13px;
+    }
+    .eraser-controls.visible { display: flex; }
+    .eraser-controls label { font-weight: 500; white-space: nowrap; }
+    .eraser-controls input[type=range] { width: 100px; accent-color: #e65100; }
+    .eraser-controls .eraser-size-label { min-width: 32px; text-align: center; font-weight: 600; color: #e65100; }
+    .eraser-controls button { padding: 4px 12px; border: 1px solid var(--divider, #ccc); border-radius: 4px; background: var(--bg-secondary, #f5f5f5); cursor: pointer; font-size: 12px; }
+    .eraser-controls button:hover { background: var(--primary, #03a9f4); color: #fff; }
+    .eraser-controls .eraser-done { background: #e65100; color: #fff; border: none; font-weight: 500; }
+    .eraser-controls .eraser-undo { color: #c62828; }
     .status-bar {
       position: absolute; top: 10px; left: 50%; transform: translateX(-50%);
       z-index: 1000; background: var(--primary); color: #fff;
@@ -195,6 +213,7 @@
     <button class="btn btn-secondary" id="btn-overlay" title="Cycle overlay: None, Heights, Surface Type" aria-label="Cycle overlay mode">Overlay: Off</button>
     <button class="btn btn-secondary" id="btn-shadow" title="Show/hide live shadow overlay" aria-label="Toggle shadow overlay">Shadows</button>
     <button class="btn btn-secondary" id="btn-timeline" title="Show daily shade forecast per zone" aria-label="Toggle shade forecast">Forecast</button>
+    <button class="btn btn-secondary" id="btn-eraser" title="Erase above-ground features (trees, etc.)" aria-label="Toggle terrain eraser">Eraser</button>
     <button class="btn btn-secondary" id="btn-fit" aria-label="Fit map to property bounds">Fit to Property</button>
 
   </div>
@@ -250,6 +269,14 @@
 </div>
 
 <!-- removed old dsm-toggle button -->
+
+<div class="eraser-controls" id="eraser-controls">
+  <label>Brush:</label>
+  <input type="range" id="eraser-size" min="2" max="30" step="1" value="5" />
+  <span class="eraser-size-label" id="eraser-size-label">5m</span>
+  <button id="eraser-undo" class="eraser-undo" title="Undo all terrain edits">Undo All</button>
+  <button id="eraser-done" class="eraser-done" title="Exit eraser mode">Done</button>
+</div>
 
 <div class="status-bar" id="status-bar"></div>
 
@@ -1099,6 +1126,226 @@
       renderSidebar();
     }
   }
+
+  // ── Terrain Eraser Tool ────────────────────────────────────────────
+
+  let eraserActive = false;
+  let eraserBrushSize = 5; // meters
+  let eraserPainting = false;
+  let eraserStrokes = []; // batch of strokes to send
+  let eraserCursor = null; // Leaflet circle showing brush preview
+  let eraserSendTimeout = null;
+
+  document.getElementById('btn-eraser').addEventListener('click', function() {
+    if (eraserActive) {
+      deactivateEraser();
+    } else {
+      activateEraser();
+    }
+  });
+
+  function activateEraser() {
+    eraserActive = true;
+    const btn = document.getElementById('btn-eraser');
+    btn.style.background = '#e65100';
+    btn.style.color = '#fff';
+    document.getElementById('eraser-controls').classList.add('visible');
+
+    // Auto-show heights overlay so the user can see what they're erasing
+    if (overlayMode !== 'heights') {
+      document.getElementById('btn-overlay').click();
+    }
+
+    // Disable drawing controls while erasing
+    map.removeControl(drawControl);
+
+    // Change cursor
+    document.getElementById('map').style.cursor = 'crosshair';
+
+    // Attach map events for painting
+    map.on('mousedown', eraserMouseDown);
+    map.on('mousemove', eraserMouseMove);
+    map.on('mouseup', eraserMouseUp);
+    map.on('mousemove', eraserCursorMove);
+
+    // Touch support
+    map.on('touchstart', eraserTouchStart);
+    map.on('touchmove', eraserTouchMove);
+    map.on('touchend', eraserMouseUp);
+
+    // Disable map dragging while painting
+    showStatus('Eraser active — click/drag to remove trees and features', 4000);
+  }
+
+  function deactivateEraser() {
+    eraserActive = false;
+    const btn = document.getElementById('btn-eraser');
+    btn.style.background = '';
+    btn.style.color = '';
+    document.getElementById('eraser-controls').classList.remove('visible');
+
+    // Re-enable drawing controls
+    map.addControl(drawControl);
+
+    // Reset cursor
+    document.getElementById('map').style.cursor = '';
+
+    // Remove events
+    map.off('mousedown', eraserMouseDown);
+    map.off('mousemove', eraserMouseMove);
+    map.off('mouseup', eraserMouseUp);
+    map.off('mousemove', eraserCursorMove);
+    map.off('touchstart', eraserTouchStart);
+    map.off('touchmove', eraserTouchMove);
+    map.off('touchend', eraserMouseUp);
+
+    // Remove cursor circle
+    if (eraserCursor) { map.removeLayer(eraserCursor); eraserCursor = null; }
+
+    // Re-enable dragging
+    map.dragging.enable();
+  }
+
+  function eraserCursorMove(e) {
+    if (!eraserActive) return;
+    const radius = parseFloat(document.getElementById('eraser-size').value);
+    if (eraserCursor) {
+      eraserCursor.setLatLng(e.latlng);
+      eraserCursor.setRadius(radius);
+    } else {
+      eraserCursor = L.circle(e.latlng, {
+        radius: radius,
+        color: '#e65100',
+        weight: 2,
+        fillColor: '#ff6d00',
+        fillOpacity: 0.2,
+        interactive: false,
+      }).addTo(map);
+    }
+  }
+
+  function eraserMouseDown(e) {
+    if (!eraserActive) return;
+    // Prevent original event only if originalEvent exists
+    if (e.originalEvent) e.originalEvent.preventDefault();
+    eraserPainting = true;
+    map.dragging.disable();
+    eraserAddStroke(e.latlng);
+  }
+
+  function eraserMouseMove(e) {
+    if (!eraserActive || !eraserPainting) return;
+    eraserAddStroke(e.latlng);
+  }
+
+  function eraserMouseUp() {
+    if (!eraserPainting) return;
+    eraserPainting = false;
+    map.dragging.enable();
+    // Send accumulated strokes
+    eraserFlushStrokes();
+  }
+
+  function eraserTouchStart(e) {
+    if (!eraserActive) return;
+    if (e.originalEvent) e.originalEvent.preventDefault();
+    eraserPainting = true;
+    map.dragging.disable();
+    if (e.latlng) eraserAddStroke(e.latlng);
+  }
+
+  function eraserTouchMove(e) {
+    if (!eraserActive || !eraserPainting) return;
+    if (e.originalEvent) e.originalEvent.preventDefault();
+    if (e.latlng) eraserAddStroke(e.latlng);
+  }
+
+  function eraserAddStroke(latlng) {
+    const radius = parseFloat(document.getElementById('eraser-size').value);
+    eraserStrokes.push({
+      lat: latlng.lat,
+      lng: latlng.lng,
+      radius_m: radius,
+    });
+
+    // Draw a visual indicator of the erased area
+    L.circle(latlng, {
+      radius: radius,
+      color: '#e65100',
+      weight: 0,
+      fillColor: '#ff6d00',
+      fillOpacity: 0.35,
+      interactive: false,
+      className: 'eraser-mark',
+    }).addTo(map);
+
+    // Debounce sending — wait for drag to finish or 300ms of inactivity
+    clearTimeout(eraserSendTimeout);
+    eraserSendTimeout = setTimeout(() => eraserFlushStrokes(), 500);
+  }
+
+  async function eraserFlushStrokes() {
+    if (eraserStrokes.length === 0) return;
+    const strokesToSend = eraserStrokes.slice();
+    eraserStrokes = [];
+
+    try {
+      showStatus('Applying eraser...', 0);
+      const result = await callWS('solar_shade/apply_eraser', { strokes: strokesToSend });
+      if (result.applied && result.image_url) {
+        // Update the height overlay with the new DSM
+        if (dsmOverlay) map.removeLayer(dsmOverlay);
+        const bounds = L.latLngBounds(
+          [result.bounds.south, result.bounds.west],
+          [result.bounds.north, result.bounds.east]
+        );
+        dsmOverlay = L.imageOverlay(result.image_url, bounds, { opacity: 0.6 });
+        dsmOverlay.addTo(map);
+        showStatus(`Erased ${result.new_pixels} pixels (${result.total_erased} total)`, 2000);
+      }
+    } catch(err) {
+      console.error('Eraser failed:', err);
+      showStatus('Eraser failed: ' + (err.message || err), 3000);
+    }
+  }
+
+  document.getElementById('eraser-size').addEventListener('input', function() {
+    document.getElementById('eraser-size-label').textContent = this.value + 'm';
+  });
+
+  document.getElementById('eraser-done').addEventListener('click', function() {
+    deactivateEraser();
+  });
+
+  document.getElementById('eraser-undo').addEventListener('click', async function() {
+    if (!confirm('Undo all terrain edits and restore original LiDAR data?')) return;
+    try {
+      showStatus('Restoring original terrain...', 0);
+      const result = await callWS('solar_shade/undo_eraser', {});
+      if (result.restored && result.image_url) {
+        // Remove any eraser marks from map
+        map.eachLayer(function(layer) {
+          if (layer.options && layer.options.className === 'eraser-mark') {
+            map.removeLayer(layer);
+          }
+        });
+        // Update overlay
+        if (dsmOverlay) map.removeLayer(dsmOverlay);
+        const bounds = L.latLngBounds(
+          [result.bounds.south, result.bounds.west],
+          [result.bounds.north, result.bounds.east]
+        );
+        dsmOverlay = L.imageOverlay(result.image_url, bounds, { opacity: 0.6 });
+        dsmOverlay.addTo(map);
+        showStatus('Original terrain restored', 3000);
+      } else {
+        showStatus('No edits to undo', 2000);
+      }
+    } catch(err) {
+      console.error('Undo eraser failed:', err);
+      showStatus('Failed to restore: ' + (err.message || err), 3000);
+    }
+  });
 
   // ── Init ───────────────────────────────────────────────────────────
 

@@ -49,7 +49,9 @@ from .const import (
 from .coordinator import SolarShadeCoordinator
 from .shadow_engine import (
     SiteModel,
+    apply_eraser_to_site,
     apply_zones_to_site,
+    load_eraser_mask,
     load_site_model,
     save_processed_dsm,
 )
@@ -90,9 +92,14 @@ async def _build_site_LiDAR(hass: HomeAssistant, entry: ConfigEntry) -> SiteMode
     cached = await hass.async_add_executor_job(load_site_model, data_dir)
     if cached is not None and cached.rows > 1:
         apply_zones_to_site(cached, zones)
+        # Apply eraser mask if one exists
+        eraser_mask = await hass.async_add_executor_job(load_eraser_mask, data_dir)
+        if eraser_mask is not None:
+            apply_eraser_to_site(cached, eraser_mask)
         _LOGGER.info(
-            "Loaded cached DSM (%dx%d), applied %d zones",
+            "Loaded cached DSM (%dx%d), applied %d zones%s",
             cached.rows, cached.cols, len(cached.zones),
+            ", eraser mask applied" if eraser_mask is not None else "",
         )
         return cached
 

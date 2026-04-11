@@ -49,6 +49,8 @@ def async_register_websocket_api(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_get_shade_timeline)
     websocket_api.async_register_command(hass, ws_get_satellite_image)
     websocket_api.async_register_command(hass, ws_get_surface_type_image)
+    websocket_api.async_register_command(hass, ws_apply_eraser)
+    websocket_api.async_register_command(hass, ws_undo_eraser)
 
 
 @websocket_api.websocket_command(
@@ -969,4 +971,221 @@ async def ws_get_surface_type_image(
         "bounds": bounds,
     })
 
+
+# ── Eraser endpoints ─────────────────────────────────────────────────
+
+
+def _latlng_to_pixel(site, lat: float, lng: float) -> tuple[int, int]:
+    """Convert a lat/lng to (row, col) pixel indices on the site grid.
+
+    Returns the nearest pixel index, clamped to valid bounds.
+    """
+    if site.native_epsg:
+        from .geo import latlon_to_epsg
+        center_e, center_n = latlon_to_epsg(
+            site.latitude, site.longitude, site.native_epsg,
+        )
+        pt_e, pt_n = latlon_to_epsg(lat, lng, site.native_epsg)
+    else:
+        from .geo import latlon_to_utm
+        _, center_e, center_n = latlon_to_utm(site.latitude, site.longitude)
+        _, pt_e, pt_n = latlon_to_utm(lat, lng)
+
+    # Offset from center in meters
+    dx = pt_e - center_e
+    dy = pt_n - center_n
+
+    # Pixel coordinates: (0,0) is top-left (north-west corner)
+    col = int(round((dx - site.x_min_m) / site.resolution))
+    row = int(round((site.y_max_m - dy) / site.resolution))
+
+    row = max(0, min(row, site.rows - 1))
+    col = max(0, min(col, site.cols - 1))
+    return row, col
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "solar_shade/apply_eraser",
+        vol.Required("strokes"): [
+            {
+                vol.Required("lat"): vol.Coerce(float),
+                vol.Required("lng"): vol.Coerce(float),
+                vol.Required("radius_m"): vol.All(
+                    vol.Coerce(float), vol.Range(min=1, max=50)
+                ),
+            }
+        ],
+    }
+)
+@websocket_api.async_response
+async def ws_apply_eraser(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Apply eraser brush strokes to flatten DSM to ground level.
+
+    Each stroke is a circle defined by (lat, lng, radius_m).
+    Erased pixels have their DSM set to DTM (ground) and classification
+    set to ground, so they no longer cast shadows.
+
+    The eraser mask is persisted so edits survive restarts.
+    """
+    from .shadow_engine import (
+        apply_eraser_to_site,
+        save_eraser_mask,
+        load_eraser_mask,
+    )
+    from .const import DATA_DIR
+
+    site = _get_site(hass)
+    if site is None or site.is_placeholder:
+        connection.send_result(msg["id"], {"available": False})
+        return
+
+    if site.dtm is None:
+        connection.send_error(
+            msg["id"], "no_ground_model",
+            "Eraser requires a ground model (DTM). No DTM available."
+        )
+        return
+
+    entries = hass.config_entries.async_entries(DOMAIN)
+    if not entries:
+        connection.send_error(msg["id"], "not_configured", "No config entry")
+        return
+    data_dir = hass.config.path(DATA_DIR)
+
+    strokes = msg["strokes"]
+
+    def apply():
+        # Load or create the cumulative mask
+        existing_mask = load_eraser_mask(data_dir)
+        if existing_mask is not None and existing_mask.shape == site.dsm.shape:
+            mask = existing_mask
+        else:
+            mask = np.zeros(site.dsm.shape, dtype=np.bool_)
+
+        # First, we need the ORIGINAL ground surface to erase to.
+        # site.ground may already have been modified by prior erasures,
+        # but DTM is never modified by the eraser — only DSM is.
+        ground = site.dtm
+
+        # Apply each stroke as a circular region
+        new_pixels = 0
+        for stroke in strokes:
+            row, col = _latlng_to_pixel(site, stroke["lat"], stroke["lng"])
+            radius_px = max(1, int(round(stroke["radius_m"] / site.resolution)))
+
+            # Create circular mask for this stroke
+            rr, cc = np.ogrid[
+                max(0, row - radius_px):min(site.rows, row + radius_px + 1),
+                max(0, col - radius_px):min(site.cols, col + radius_px + 1),
+            ]
+            dist_sq = (rr - row) ** 2 + (cc - col) ** 2
+            circle = dist_sq <= radius_px ** 2
+
+            r_start = max(0, row - radius_px)
+            c_start = max(0, col - radius_px)
+            r_end = min(site.rows, row + radius_px + 1)
+            c_end = min(site.cols, col + radius_px + 1)
+
+            stroke_mask = np.zeros(site.dsm.shape, dtype=np.bool_)
+            stroke_mask[r_start:r_end, c_start:c_end] = circle
+            new_pixels += int(stroke_mask.sum())
+            mask |= stroke_mask
+
+        # Apply erasure: flatten DSM to ground at masked pixels
+        site.dsm[mask] = ground[mask]
+        if site.classification is not None:
+            from .shadow_engine import CLASS_GROUND
+            site.classification[mask] = CLASS_GROUND
+        if site.canopy_base is not None:
+            site.canopy_base[mask] = ground[mask]
+
+        # Save the cumulative mask
+        save_eraser_mask(mask, data_dir)
+
+        # Re-render the height overlay image
+        rgba = _dsm_to_rgba(site)
+        image_url = _array_to_png_data_url(rgba)
+        bounds = _site_bounds_latlng(site)
+
+        return {
+            "applied": True,
+            "new_pixels": new_pixels,
+            "total_erased": int(mask.sum()),
+            "image_url": image_url,
+            "bounds": bounds,
+        }
+
+    result = await hass.async_add_executor_job(apply)
+    connection.send_result(msg["id"], result)
+
+
+@websocket_api.websocket_command(
+    {vol.Required("type"): "solar_shade/undo_eraser"}
+)
+@websocket_api.async_response
+async def ws_undo_eraser(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Undo all eraser edits by deleting the mask and reloading the site model.
+
+    Restores the original DSM from the cached NPZ file.
+    """
+    from .shadow_engine import delete_eraser_mask, load_site_model, apply_zones_to_site
+    from .const import DATA_DIR, CONF_ZONES
+
+    entries = hass.config_entries.async_entries(DOMAIN)
+    if not entries:
+        connection.send_error(msg["id"], "not_configured", "No config entry")
+        return
+
+    entry = entries[0]
+    data_dir = hass.config.path(DATA_DIR)
+
+    def restore():
+        deleted = delete_eraser_mask(data_dir)
+        if not deleted:
+            return None
+
+        # Reload original site from NPZ (without eraser mask applied)
+        site = load_site_model(data_dir)
+        if site is not None:
+            zones = entry.options.get(CONF_ZONES, [])
+            apply_zones_to_site(site, zones)
+        return site
+
+    new_site = await hass.async_add_executor_job(restore)
+
+    if new_site is None:
+        connection.send_result(msg["id"], {"restored": False, "reason": "no_mask"})
+        return
+
+    # Swap the restored site into integration data
+    domain_data = hass.data.get(DOMAIN, {})
+    entry_data = domain_data.get(entry.entry_id, {})
+    entry_data["site"] = new_site
+
+    # Update coordinator reference
+    coordinator = entry_data.get("coordinator")
+    if coordinator is not None:
+        coordinator.site = new_site
+
+    # Re-render the height overlay
+    def render():
+        rgba = _dsm_to_rgba(new_site)
+        return _array_to_png_data_url(rgba), _site_bounds_latlng(new_site)
+
+    image_url, bounds = await hass.async_add_executor_job(render)
+
+    connection.send_result(msg["id"], {
+        "restored": True,
+        "image_url": image_url,
+        "bounds": bounds,
+    })
 

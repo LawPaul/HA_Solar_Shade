@@ -892,9 +892,11 @@ def _rasterize_laz_file(
     # Gap-filling and morphological closing
     if dsm_gap_fill:
         dsm = _fill_dsm_classification_aware(dsm, dtm, cls_grid, resolution)
+    # Fill DSM gaps (cells with no LiDAR returns) with ground elevation.
+    # np.fmax ignores NaN: fmax(NaN, dtm) → dtm, fmax(dsm, dtm) → max.
+    dsm = np.fmax(dsm, dtm)
     cb_nan = np.isnan(canopy_base)
     canopy_base[cb_nan] = dsm[cb_nan]
-    dsm = np.maximum(dsm, dtm)
 
     _fill_classification_holes(dsm, dtm, cls_grid, rows, cols)
 

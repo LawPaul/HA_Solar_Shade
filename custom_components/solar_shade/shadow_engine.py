@@ -429,6 +429,66 @@ def load_site_model(data_dir: str) -> SiteModel | None:
     )
 
 
+# ── Eraser support ──────────────────────────────────────────────────
+
+
+def save_eraser_mask(mask: np.ndarray, data_dir: str) -> None:
+    """Save the eraser mask to a separate file alongside the DSM."""
+    data_path = Path(data_dir)
+    data_path.mkdir(parents=True, exist_ok=True)
+    mask_path = data_path / "eraser_mask.npy"
+    np.save(str(mask_path), mask.astype(np.bool_))
+    _LOGGER.info("Saved eraser mask (%d erased pixels) to %s",
+                 int(mask.sum()), mask_path)
+
+
+def load_eraser_mask(data_dir: str) -> np.ndarray | None:
+    """Load eraser mask from disk, or None if not present."""
+    mask_path = Path(data_dir) / "eraser_mask.npy"
+    if not mask_path.exists():
+        return None
+    try:
+        mask = np.load(str(mask_path))
+        _LOGGER.info("Loaded eraser mask: %d erased pixels", int(mask.sum()))
+        return mask.astype(np.bool_)
+    except (OSError, ValueError) as err:
+        _LOGGER.warning("Could not load eraser mask: %s", err)
+        return None
+
+
+def delete_eraser_mask(data_dir: str) -> bool:
+    """Delete the eraser mask file. Returns True if a file was deleted."""
+    mask_path = Path(data_dir) / "eraser_mask.npy"
+    if mask_path.exists():
+        mask_path.unlink()
+        _LOGGER.info("Deleted eraser mask")
+        return True
+    return False
+
+
+def apply_eraser_to_site(site: SiteModel, mask: np.ndarray) -> None:
+    """Apply an eraser mask to a site model in-place.
+
+    Erased pixels get flattened to ground level:
+    - DSM set to DTM (ground) value
+    - Classification set to CLASS_GROUND
+    - Canopy base set to ground value
+    """
+    if mask.shape != site.dsm.shape:
+        _LOGGER.warning(
+            "Eraser mask shape %s doesn't match DSM %s — skipping",
+            mask.shape, site.dsm.shape,
+        )
+        return
+
+    ground = site.ground  # DTM if available, else DSM
+    site.dsm[mask] = ground[mask]
+    if site.classification is not None:
+        site.classification[mask] = CLASS_GROUND
+    if site.canopy_base is not None:
+        site.canopy_base[mask] = ground[mask]
+
+
 def compute_shadow_map(
     dsm: np.ndarray,
     sun_azimuth_deg: float,
@@ -527,7 +587,7 @@ def _ray_march_shadow(
     each step processes all pixels simultaneously.
     """
     tan_el = math.tan(sun_elevation_rad)
-    if tan_el <= 0:
+    if not (tan_el > 0):  # catches <= 0 and NaN
         return np.zeros((rows, cols), dtype=np.float32)
 
     shadow = np.zeros((rows, cols), dtype=np.float32)
@@ -553,8 +613,8 @@ def _ray_march_shadow(
 
     # Pre-check: find the maximum feature height to bound ray length.
     # No shadow can be cast further than max_height / tan(el) / pixel_size.
-    max_feature_height = float(cast.max() - receive.min())
-    if max_feature_height <= 0:
+    max_feature_height = float(np.nanmax(cast) - np.nanmin(receive))
+    if not (max_feature_height > 0):  # catches <= 0 and NaN
         return shadow_opacity
     max_shadow_reach = int(max_feature_height / (step_dist_m * tan_el)) + 2
     max_steps = min(max_steps, max_shadow_reach)
