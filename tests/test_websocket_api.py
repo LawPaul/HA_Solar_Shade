@@ -1,6 +1,5 @@
 """Tests for Solar Shade websocket API utility functions."""
 
-import math
 from datetime import datetime, timezone
 
 import numpy as np
@@ -14,7 +13,7 @@ from custom_components.solar_shade.websocket_api import (
 
 
 class TestSiteBoundsLatlng:
-    """Test the flat-earth site bounds calculation."""
+    """Test the projected site bounds calculation."""
 
     def _make_site(self, lat=40.0, lng=-105.0, x_range=(-50, 50), y_range=(-50, 50)):
         dsm = np.zeros((10, 10), dtype=np.float32)
@@ -45,7 +44,7 @@ class TestSiteBoundsLatlng:
         bounds = _site_bounds_latlng(site)
         offset_south = 45.0 - bounds["south"]
         offset_north = bounds["north"] - 45.0
-        assert abs(offset_south - offset_north) < 1e-10
+        assert abs(offset_south - offset_north) < 1e-6
 
     def test_east_west_wider_at_equator(self):
         equator = self._make_site(lat=0.0, lng=0.0, x_range=(-100, 100), y_range=(-100, 100))

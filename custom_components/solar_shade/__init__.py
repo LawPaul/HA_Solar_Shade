@@ -22,21 +22,26 @@ CONFIG_SCHEMA = cv.config_entry_only_config_schema("solar_shade")
 from .const import (
     CONF_DOWNLOAD_RADIUS,
     CONF_DSM_GAP_FILL,
+    CONF_DSM_PROVIDER,
     CONF_DSM_SOURCE,
     CONF_ENABLE_OPEN_METEO,
     CONF_LATITUDE,
     CONF_LIDAR_FILE,
     CONF_LIDAR_PROJECT,
     CONF_LONGITUDE,
+    CONF_MANUAL_EPSG,
     CONF_MIN_CELL_SIZE,
     CONF_ZONES,
     DATA_DIR,
     DEFAULT_DOWNLOAD_RADIUS,
     DEFAULT_DSM_GAP_FILL,
+    DEFAULT_DSM_PROVIDER,
     DEFAULT_ENABLE_OPEN_METEO,
+    DEFAULT_MANUAL_EPSG,
     DEFAULT_MIN_CELL_SIZE,
     DEFAULT_RESOLUTION,
     DOMAIN,
+    DSM_PROVIDER_AUTO,
     DSM_SOURCE_AUTO,
     DSM_SOURCE_LAZ,
     SERVICE_RELOAD_SITE,
@@ -97,13 +102,17 @@ async def _build_site_LiDAR(hass: HomeAssistant, entry: ConfigEntry) -> SiteMode
     if dsm_source == DSM_SOURCE_LAZ:
         lidar_file = entry.options.get(CONF_LIDAR_FILE, "")
         if lidar_file:
-            site = await _try_laz_file(hass, lidar_file, latitude, longitude, data_dir, zones)
+            manual_epsg = entry.options.get(CONF_MANUAL_EPSG, DEFAULT_MANUAL_EPSG)
+            site = await _try_laz_file(
+                hass, lidar_file, latitude, longitude, data_dir, zones,
+                epsg_override=manual_epsg,
+            )
             if site is not None:
                 return site
 
     # 2 / 4. Return placeholder — download will happen in background
     _LOGGER.info("No cached LiDAR data. Download will start in the background.")
-    return SiteModel(dsm=np.zeros((1, 1)), resolution=DEFAULT_RESOLUTION)
+    return SiteModel(dsm=np.zeros((1, 1)), resolution=DEFAULT_RESOLUTION, is_placeholder=True)
 
 
 async def _background_download(
@@ -121,6 +130,7 @@ async def _background_download(
     lidar_project = entry.options.get(CONF_LIDAR_PROJECT, "")
     min_cell_size = entry.options.get(CONF_MIN_CELL_SIZE, DEFAULT_MIN_CELL_SIZE)
     dsm_gap_fill = entry.options.get(CONF_DSM_GAP_FILL, DEFAULT_DSM_GAP_FILL)
+    dsm_provider = entry.options.get(CONF_DSM_PROVIDER, DEFAULT_DSM_PROVIDER)
 
     _LOGGER.info(
         "Background LiDAR download starting (radius %dm)...",
@@ -135,7 +145,7 @@ async def _background_download(
             title="Solar Shade: Downloading",
             notification_id="solar_shade_download_progress",
         )
-    except Exception:
+    except (TypeError, RuntimeError, AttributeError):
         _LOGGER.debug("Could not create download notification (non-fatal)")
 
     # Retry up to 3 times with increasing delay for transient network failures
@@ -144,11 +154,12 @@ async def _background_download(
     for attempt in range(1, max_retries + 1):
         try:
             _LOGGER.debug("Download attempt %d/%d...", attempt, max_retries)
-            site = await _try_usgs_download(
+            site = await _try_download(
                 hass, latitude, longitude, data_dir, zones,
                 download_radius, lidar_project=lidar_project,
                 min_cell_size=min_cell_size,
                 dsm_gap_fill=dsm_gap_fill,
+                dsm_provider=dsm_provider,
             )
             if site is not None:
                 break
@@ -177,7 +188,7 @@ async def _background_download(
                 title="Solar Shade: No Data Found",
                 notification_id="solar_shade_no_data",
             )
-        except Exception:
+        except (TypeError, RuntimeError, AttributeError):
             _LOGGER.debug("Notification error (non-critical)", exc_info=True)
         return
 
@@ -199,9 +210,86 @@ async def _background_download(
             title="Solar Shade: Ready",
             notification_id="solar_shade_ready",
         )
-    except Exception:
+    except (TypeError, RuntimeError, AttributeError):
         _LOGGER.debug("Notification error (non-critical)", exc_info=True)
     await coordinator.async_request_refresh()
+
+
+async def _try_download(
+    hass, latitude, longitude, data_dir, zones, radius_m=150.0,
+    lidar_project: str = "", min_cell_size: float = 0.5,
+    dsm_gap_fill: bool = False, dsm_provider: str = "auto",
+) -> SiteModel | None:
+    """Try to auto-download DSM from the configured elevation provider."""
+    from .elevation_provider import detect_provider, get_provider
+
+    # Resolve provider
+    if dsm_provider == DSM_PROVIDER_AUTO:
+        provider_id = detect_provider(hass.config.country)
+        _LOGGER.info(
+            "Auto-detected elevation provider '%s' for country '%s'",
+            provider_id, hass.config.country,
+        )
+    else:
+        provider_id = dsm_provider
+
+    # USGS path: use existing download_usgs_dsm for full feature parity
+    # (lidar_project filtering, etc.)
+    if provider_id == "usgs":
+        return await _try_usgs_download(
+            hass, latitude, longitude, data_dir, zones,
+            radius_m, lidar_project=lidar_project,
+            min_cell_size=min_cell_size,
+            dsm_gap_fill=dsm_gap_fill,
+        )
+
+    # International providers: use the provider abstraction
+    provider = get_provider(provider_id)
+    _LOGGER.info(
+        "Downloading DSM via %s for %.4f, %.4f (radius %dm)...",
+        provider.PROVIDER_NAME, latitude, longitude, radius_m,
+    )
+
+    result = await provider.download_elevation(
+        latitude=latitude,
+        longitude=longitude,
+        radius_m=radius_m,
+        min_cell_size=min_cell_size,
+        dsm_gap_fill=dsm_gap_fill,
+    )
+
+    if result is None:
+        return None
+
+    dsm, dtm, cls_grid, canopy_base, x_min, y_min, x_max, y_max, resolution = result
+
+    extent_x = (x_max - x_min) / 2
+    extent_y = (y_max - y_min) / 2
+
+    site = SiteModel(
+        dsm=dsm,
+        resolution=resolution,
+        latitude=latitude,
+        longitude=longitude,
+        dtm=dtm,
+        classification=cls_grid,
+        canopy_base=canopy_base,
+        x_min_m=-extent_x,
+        y_min_m=-extent_y,
+        x_max_m=extent_x,
+        y_max_m=extent_y,
+        native_epsg=provider.NATIVE_EPSG,
+    )
+
+    await hass.async_add_executor_job(save_processed_dsm, site, data_dir)
+    apply_zones_to_site(site, zones)
+    _LOGGER.info(
+        "%s data ready: DSM %dx%d, DTM %s",
+        provider.PROVIDER_NAME,
+        site.rows, site.cols,
+        f"{dtm.shape[0]}x{dtm.shape[1]}" if dtm is not None else "not available",
+    )
+    return site
 
 
 async def _try_usgs_download(
@@ -265,10 +353,12 @@ async def _try_usgs_download(
 
 
 async def _try_laz_file(
-    hass, lidar_file, latitude, longitude, data_dir, zones
+    hass, lidar_file, latitude, longitude, data_dir, zones,
+    epsg_override: int = 0,
 ) -> SiteModel | None:
     """Try to process a manually placed LAZ file."""
     from .shadow_engine import process_lidar_file
+    from functools import partial
 
     lidar_path = Path(data_dir) / lidar_file
     if not lidar_path.exists():
@@ -277,7 +367,11 @@ async def _try_laz_file(
 
     _LOGGER.info("Processing LAZ file: %s", lidar_path)
     site = await hass.async_add_executor_job(
-        process_lidar_file, str(lidar_path), latitude, longitude
+        partial(
+            process_lidar_file,
+            str(lidar_path), latitude, longitude,
+            epsg_override=epsg_override,
+        )
     )
     await hass.async_add_executor_job(save_processed_dsm, site, data_dir)
     apply_zones_to_site(site, zones)
@@ -291,7 +385,7 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     try:
         from .websocket_api import async_register_websocket_api
         async_register_websocket_api(hass)
-    except Exception:
+    except (ImportError, AttributeError, RuntimeError):
         _LOGGER.exception("Solar Shade: failed to register websocket API")
         return False
 
@@ -318,7 +412,7 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
             update=True,
         )
         _LOGGER.info("Solar Shade: panel registered in sidebar")
-    except Exception:
+    except (ImportError, AttributeError, OSError, RuntimeError):
         _LOGGER.exception("Solar Shade: failed to register panel")
 
     return True
@@ -361,7 +455,7 @@ async def _async_setup_entry_inner(hass: HomeAssistant, entry: ConfigEntry) -> b
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     # If site is a placeholder (no cached data), start background download
-    if site.rows <= 1:
+    if site.is_placeholder:
         dsm_source = entry.options.get(CONF_DSM_SOURCE, DSM_SOURCE_AUTO)
         _LOGGER.info(
             "Solar Shade: No cached LiDAR data (site.rows=%d, "
@@ -408,7 +502,7 @@ async def _async_options_updated(
     site = entry_data.get("site")
 
     # Don't reload if we're still waiting for background download
-    if site is not None and site.rows <= 1:
+    if site is not None and site.is_placeholder:
         _LOGGER.info(
             "Options updated but LiDAR download in progress — skipping reload"
         )
@@ -434,7 +528,7 @@ async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     try:
         from homeassistant.components.frontend import async_remove_panel
         async_remove_panel(hass, "solar-shade")
-    except Exception:
+    except (ImportError, KeyError):
         _LOGGER.debug("Panel removal error (non-critical)", exc_info=True)
 
     # Remove cached LiDAR data
@@ -444,5 +538,5 @@ async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
         _LOGGER.info("Removed cached data directory: %s", data_dir)
     except FileNotFoundError:
         pass
-    except Exception:
+    except OSError:
         _LOGGER.warning("Could not remove cache directory: %s", data_dir)

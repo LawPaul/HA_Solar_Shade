@@ -36,8 +36,10 @@
           "shade_method": "Shade calculation method",
           "canopy_model": "Tree canopy model",
           "dsm_gap_fill": "Fill DSM gaps (experimental, may cause artifacts)",
+          "dsm_provider": "Elevation data provider",
           "dsm_source": "DSM data source",
           "lidar_project": "USGS LiDAR project path (optional)",
+          "manual_epsg": "Manual EPSG code (0 = auto-detect from file)",
           "latitude_override": "Latitude override (leave blank to use HA location)",
           "longitude_override": "Longitude override (leave blank to use HA location)"
         }

@@ -7,6 +7,7 @@ the Solar Shade integration — no separate integration or YAML needed.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import timedelta
 
@@ -62,6 +63,6 @@ class OpenMeteoCoordinator(DataUpdateCoordinator):
                     "shortwave": float(current.get("shortwave_radiation", 0)),
                     "diffuse": float(current.get("diffuse_radiation", 0)),
                 }
-        except Exception as err:
+        except (aiohttp.ClientError, asyncio.TimeoutError, KeyError, ValueError) as err:
             _LOGGER.warning("Open-Meteo fetch failed: %s", err)
             return self.data or {"shortwave": 0.0, "diffuse": 0.0}

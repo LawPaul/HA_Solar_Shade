@@ -76,25 +76,7 @@ class SolarShadeCoordinator(DataUpdateCoordinator):
 
     async def _async_update_data(self) -> dict[str, dict]:
         """Read radiation source, compute live shadows, return adjusted values."""
-        try:
-            return await self._do_update()
-        except Exception:
-            _LOGGER.exception("Shadow update failed — returning zeros")
-            return {
-                z.zone_id: {
-                    "adjusted_radiation": 0.0,
-                    "raw_radiation": 0.0,
-                    "shade_fraction": 1.0,
-                    "shade_average": 1.0,
-                    "shade_sunniest": 1.0,
-                    "shade_shadiest": 1.0,
-                    "diffuse_fraction": self._diffuse,
-                    "zone_name": z.zone_name,
-                    "sun_azimuth": 0.0,
-                    "sun_elevation": -90.0,
-                }
-                for z in self.site.zones
-            }
+        return await self._do_update()
 
     async def _do_update(self) -> dict[str, dict]:
         raw = 0.0

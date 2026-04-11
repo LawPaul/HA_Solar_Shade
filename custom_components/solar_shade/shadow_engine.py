@@ -147,6 +147,10 @@ class SiteModel:
     y_min_m: float = 0.0
     x_max_m: float = 0.0
     y_max_m: float = 0.0
+    # EPSG code of the projected CRS used for grid coordinates (0 = UTM)
+    native_epsg: int = 0
+    # True while background download is in progress (no real data yet)
+    is_placeholder: bool = False
 
     @property
     def rows(self) -> int:
@@ -177,12 +181,27 @@ def process_lidar_file(
     filepath: str,
     latitude: float,
     longitude: float,
+    min_cell_size: float = 0.5,
+    dsm_gap_fill: bool = False,
+    epsg_override: int = 0,
 ) -> SiteModel:
-    """Process a LAS/LAZ file into a SiteModel with DSM.
+    """Process a LAS/LAZ file into a SiteModel.
 
-    The DSM is centered on the center of the point cloud.
-    Zone coordinates are expressed as meters from this center point.
+    For manually-placed files, always rasterizes using the file's own
+    centroid and full extent — the user's lat/lon is metadata for sun
+    position calculations, not a clipping anchor.
+
+    CRS detection order:
+    1. epsg_override (user-configured, if non-zero)
+    2. VLR metadata (parse_crs, WKT, GeoKeys)
+    3. Filename EPSG extraction
+    4. Falls back to 0 (unknown) — still works, just no reprojection.
     """
+    from .usgs_downloader import (
+        _read_laz_epsg,
+        _rasterize_laz_file,
+    )
+
     try:
         import laspy
     except ImportError:
@@ -193,52 +212,120 @@ def process_lidar_file(
         raise
 
     _LOGGER.info("Processing LiDAR file: %s", filepath)
+
+    # ── Detect the file's CRS ────────────────────────────────────
+    if epsg_override:
+        native_epsg = epsg_override
+        _LOGGER.info("Using user-configured EPSG override: %d", native_epsg)
+    else:
+        detected = _read_laz_epsg(filepath, laspy)
+        native_epsg = detected or 0
+        if native_epsg:
+            _LOGGER.info("Auto-detected CRS: EPSG:%d", native_epsg)
+        else:
+            _LOGGER.info(
+                "No CRS detected from file metadata — "
+                "rasterizing with raw coordinates."
+            )
+
+    # ── Use file centroid and full extent for rasterization ───────
+    # A manually-placed file should be processed in its entirety.
+    # The user's lat/lon may project outside this tile's bounds
+    # (e.g. the API returned a neighboring tile), so we always use
+    # the file's own centroid as the rasterization center.
+    try:
+        with laspy.open(filepath) as reader:
+            mins = reader.header.mins
+            maxs = reader.header.maxs
+            center_e = (mins[0] + maxs[0]) / 2
+            center_n = (mins[1] + maxs[1]) / 2
+            radius_m = max(maxs[0] - mins[0], maxs[1] - mins[1]) / 2 + 10
+    except (OSError, ValueError, IndexError):
+        _LOGGER.error("Could not read LAZ header to determine extent")
+        raise
+
+    _LOGGER.info(
+        "Rasterizing manual LAZ: centroid E%.1f N%.1f, "
+        "radius %.0fm, EPSG:%d",
+        center_e, center_n, radius_m, native_epsg,
+    )
+
+    result = _rasterize_laz_file(
+        laz_path=filepath,
+        center_easting=center_e,
+        center_northing=center_n,
+        radius_m=radius_m,
+        min_cell_size=min_cell_size,
+        dsm_gap_fill=dsm_gap_fill,
+        expected_epsg=native_epsg,
+    )
+
+    if result is None:
+        # Rasterization failed — build a minimal DSM from raw points
+        _LOGGER.warning(
+            "Full rasterization pipeline returned None for %s. "
+            "Falling back to simple max-height DSM.",
+            filepath,
+        )
+        return _process_lidar_file_simple(filepath, latitude, longitude)
+
+    dsm, dtm, cls_grid, canopy_base, x_min, y_min, x_max, y_max, resolution = result
+
+    extent_x = (x_max - x_min) / 2
+    extent_y = (y_max - y_min) / 2
+
+    return SiteModel(
+        dsm=dsm,
+        resolution=resolution,
+        latitude=latitude,
+        longitude=longitude,
+        dtm=dtm,
+        classification=cls_grid,
+        canopy_base=canopy_base,
+        x_min_m=-extent_x,
+        y_min_m=-extent_y,
+        x_max_m=extent_x,
+        y_max_m=extent_y,
+        native_epsg=native_epsg,
+    )
+
+
+def _process_lidar_file_simple(
+    filepath: str,
+    latitude: float,
+    longitude: float,
+) -> SiteModel:
+    """Fallback: simple max-height DSM when full pipeline cannot process the file."""
+    import laspy
+
     las = laspy.read(filepath)
     x = np.array(las.x, dtype=np.float64)
     y = np.array(las.y, dtype=np.float64)
     z = np.array(las.z, dtype=np.float32)
 
-    _LOGGER.info(
-        "Loaded %d points, X: %.1f-%.1f, Y: %.1f-%.1f, Z: %.1f-%.1f",
-        len(x), x.min(), x.max(), y.min(), y.max(), z.min(), z.max(),
-    )
-
     x_min, x_max = float(x.min()), float(x.max())
     y_min, y_max = float(y.min()), float(y.max())
 
-    # Auto-calculate resolution from point density (target ~4 pts/cell).
     area_m2 = max((x_max - x_min) * (y_max - y_min), 1.0)
     density = len(x) / area_m2
-    auto_res = max(0.5, 2.0 / max(density ** 0.5, 0.01))
-    resolution = round(auto_res * 2) / 2  # snap to 0.5m increments
+    resolution = round(max(0.5, 2.0 / max(density ** 0.5, 0.01)) * 2) / 2
     resolution = max(0.5, min(resolution, 5.0))
-    _LOGGER.info("Auto resolution: %.1fm (density: %.1f pts/m²)", resolution, density)
 
     cols = int(np.ceil((x_max - x_min) / resolution)) + 1
     rows = int(np.ceil((y_max - y_min) / resolution)) + 1
 
-    col_idx = ((x - x_min) / resolution).astype(int)
-    row_idx = ((y_max - y) / resolution).astype(int)  # row 0 = north
+    col_idx = np.clip(((x - x_min) / resolution).astype(int), 0, cols - 1)
+    row_idx = np.clip(((y_max - y) / resolution).astype(int), 0, rows - 1)
+    flat_idx = row_idx * cols + col_idx
 
-    col_idx = np.clip(col_idx, 0, cols - 1)
-    row_idx = np.clip(row_idx, 0, rows - 1)
+    dsm = np.full(rows * cols, -np.inf, dtype=np.float32)
+    np.maximum.at(dsm, flat_idx, z)
+    dsm = dsm.reshape(rows, cols)
+    dsm[dsm == -np.inf] = np.nan
 
-    # DSM = max height per cell
-    dsm = np.full((rows, cols), np.nan, dtype=np.float32)
-    for i in range(len(z)):
-        r, c = int(row_idx[i]), int(col_idx[i])
-        if np.isnan(dsm[r, c]) or z[i] > dsm[r, c]:
-            dsm[r, c] = z[i]
-
-    # Fill gaps with minimum (ground estimate)
     ground = float(np.nanmin(dsm))
     dsm = np.where(np.isnan(dsm), ground, dsm)
 
-    _LOGGER.info("DSM: %dx%d pixels at %.1fm resolution", rows, cols, resolution)
-
-    # Calculate extents in meters from center
-    center_x = (x_min + x_max) / 2
-    center_y = (y_min + y_max) / 2
     extent_x = (x_max - x_min) / 2
     extent_y = (y_max - y_min) / 2
 
@@ -276,6 +363,8 @@ def save_processed_dsm(site: SiteModel, data_dir: str) -> None:
         save_data["classification"] = site.classification
     if site.canopy_base is not None:
         save_data["canopy_base"] = site.canopy_base
+    if site.native_epsg:
+        save_data["native_epsg"] = np.array(site.native_epsg)
 
     np.savez_compressed(str(npz_path), **save_data)
     _LOGGER.info(
@@ -314,6 +403,7 @@ def load_site_model(data_dir: str) -> SiteModel | None:
     dtm = data["dtm"] if "dtm" in data else None
     classification = data["classification"] if "classification" in data else None
     canopy_base = data["canopy_base"] if "canopy_base" in data else None
+    native_epsg = int(data["native_epsg"]) if "native_epsg" in data else 0
 
     _LOGGER.info(
         "Loaded DSM: %dx%d at %.1fm, extent: %.0fm x %.0fm, DTM: %s, classification: %s",
@@ -335,6 +425,7 @@ def load_site_model(data_dir: str) -> SiteModel | None:
         y_min_m=y_min_m,
         x_max_m=x_max_m,
         y_max_m=y_max_m,
+        native_epsg=native_epsg,
     )
 
 
@@ -391,7 +482,6 @@ def compute_shadow_map(
 
     az = math.radians(sun_azimuth_deg)
     el = math.radians(sun_elevation_deg)
-    tan_el = math.tan(el)
 
     light_dx = math.sin(az)
     light_dy = -math.cos(az)
@@ -399,7 +489,6 @@ def compute_shadow_map(
     step_scale = math.sqrt(light_dx**2 + light_dy**2)
     if step_scale < 1e-10:
         return np.zeros((rows, cols), dtype=np.float32)
-    height_drop_per_pixel = pixel_size_m * step_scale * tan_el
 
     shadow = np.zeros((rows, cols), dtype=np.float32)
 
@@ -751,18 +840,24 @@ def _polygon_to_zone_def(
 
     rows, cols = site.dsm.shape
 
-    # Convert lat/lng to DSM pixel coordinates
-    # The DSM center corresponds to (site.latitude, site.longitude)
-    ref_lat = site.latitude
-    ref_lng = site.longitude
-    m_per_deg_lat = 111320.0
-    m_per_deg_lng = 111320.0 * math.cos(math.radians(ref_lat))
+    # Convert lat/lng to DSM pixel coordinates using proper CRS projection
+    from .geo import latlon_to_epsg, latlon_to_utm
+
+    if site.native_epsg:
+        center_e, center_n = latlon_to_epsg(site.latitude, site.longitude, site.native_epsg)
+        proj_epsg = site.native_epsg
+    else:
+        zone, center_e, center_n = latlon_to_utm(site.latitude, site.longitude)
+        proj_epsg = (32600 + zone) if site.latitude >= 0 else (32700 + zone)
 
     pixel_coords = []
     for lat, lng in polygon_latlng:
-        # Meters from center
-        mx = (lng - ref_lng) * m_per_deg_lng
-        my = (lat - ref_lat) * m_per_deg_lat
+        if site.native_epsg:
+            px_e, px_n = latlon_to_epsg(lat, lng, proj_epsg)
+        else:
+            _, px_e, px_n = latlon_to_utm(lat, lng)
+        mx = px_e - center_e
+        my = px_n - center_n
 
         # Pixel coordinates (row 0 = north = y_max)
         col = (mx - site.x_min_m) / site.resolution

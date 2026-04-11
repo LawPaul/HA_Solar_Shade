@@ -64,9 +64,7 @@ class TestAsyncSetupEntry:
         added_entities = []
         async_add_entities = MagicMock(side_effect=lambda e: added_entities.extend(e))
 
-        asyncio.get_event_loop().run_until_complete(
-            async_setup_entry(hass, entry, async_add_entities)
-        )
+        asyncio.run(async_setup_entry(hass, entry, async_add_entities))
 
         async_add_entities.assert_called_once()
         # 2 radiation + 2 sun = 4 entities
@@ -87,9 +85,7 @@ class TestAsyncSetupEntry:
         added_entities = []
         async_add_entities = MagicMock(side_effect=lambda e: added_entities.extend(e))
 
-        asyncio.get_event_loop().run_until_complete(
-            async_setup_entry(hass, entry, async_add_entities)
-        )
+        asyncio.run(async_setup_entry(hass, entry, async_add_entities))
 
         assert len(added_entities) == 2  # 1 radiation + 1 sun
 
@@ -101,9 +97,7 @@ class TestAsyncSetupEntry:
         added_entities = []
         async_add_entities = MagicMock(side_effect=lambda e: added_entities.extend(e))
 
-        asyncio.get_event_loop().run_until_complete(
-            async_setup_entry(hass, entry, async_add_entities)
-        )
+        asyncio.run(async_setup_entry(hass, entry, async_add_entities))
 
         assert len(added_entities) == 0
 
@@ -119,9 +113,7 @@ class TestAsyncSetupEntry:
         added_entities = []
         async_add_entities = MagicMock(side_effect=lambda e: added_entities.extend(e))
 
-        asyncio.get_event_loop().run_until_complete(
-            async_setup_entry(hass, entry, async_add_entities)
-        )
+        asyncio.run(async_setup_entry(hass, entry, async_add_entities))
 
         radiation_sensors = [e for e in added_entities if isinstance(e, SolarShadeSensor)]
         assert radiation_sensors[0]._zone_id == "abc123"
