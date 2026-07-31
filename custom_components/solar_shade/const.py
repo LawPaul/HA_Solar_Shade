@@ -24,13 +24,12 @@ CONF_MIN_CELL_SIZE = "min_cell_size"
 CONF_UPDATE_INTERVAL = "update_interval"
 CONF_DOWNLOAD_RADIUS = "download_radius"
 CONF_MIN_SHADOW_HEIGHT = "min_shadow_height"
-CONF_SHADE_METHOD = "shade_method"
 DATA_DIR = "solar_shade"
 
+# Per-zone shade aggregation methods (selected on each zone tile in the panel)
 SHADE_METHOD_AVERAGE = "average"
 SHADE_METHOD_SUNNIEST = "sunniest"
 SHADE_METHOD_SHADIEST = "shadiest"
-DEFAULT_SHADE_METHOD = SHADE_METHOD_AVERAGE
 
 ATTR_ZONE_NAME = "zone_name"
 ATTR_SHADE_FRACTION = "shade_fraction"

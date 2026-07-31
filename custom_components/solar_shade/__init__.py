@@ -408,13 +408,19 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
             )]
         )
 
+        # Cache-bust the iframe so a restart always loads the latest panel.html
+        # (HA embeds the panel in an iframe whose HTML the browser caches
+        # aggressively; a changing query string forces a fresh fetch).
+        import time
+        panel_url = f"/solar_shade/panel/panel.html?v={int(time.time())}"
+
         async_register_built_in_panel(
             hass,
             component_name="iframe",
             sidebar_title="Solar Shade",
             sidebar_icon="mdi:sun-angle",
             frontend_url_path="solar-shade",
-            config={"url": "/solar_shade/panel/panel.html"},
+            config={"url": panel_url},
             require_admin=True,
             update=True,
         )
@@ -507,6 +513,13 @@ async def _async_options_updated(
     domain_data = hass.data.get(DOMAIN, {})
     entry_data = domain_data.get(entry.entry_id, {})
     site = entry_data.get("site")
+
+    # A WebSocket handler (e.g. save_zones) may already be performing the
+    # reload itself and awaiting it; skip to avoid a duplicate reload.
+    from .websocket_api import SKIP_OPTIONS_RELOAD
+    if entry.entry_id in SKIP_OPTIONS_RELOAD:
+        _LOGGER.debug("Options update reload handled by caller, skipping listener reload")
+        return
 
     # Don't reload if we're still waiting for background download
     if site is not None and site.is_placeholder:

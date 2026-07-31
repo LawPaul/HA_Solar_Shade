@@ -15,18 +15,16 @@ from .const import (
     CONF_ENABLE_OPEN_METEO,
     CONF_MIN_SHADOW_HEIGHT,
     CONF_RADIATION_ENTITY,
-    CONF_SHADE_METHOD,
     CONF_UPDATE_INTERVAL,
     DEFAULT_DIFFUSE_ENTITY,
     DEFAULT_DIFFUSE_FRACTION,
     DEFAULT_ENABLE_OPEN_METEO,
     DEFAULT_MIN_SHADOW_HEIGHT,
     DEFAULT_RADIATION_ENTITY,
-    DEFAULT_SHADE_METHOD,
     DEFAULT_UPDATE_INTERVAL,
     DOMAIN,
 )
-from .shadow_engine import SiteModel, compute_adjusted_radiation, compute_zone_shade_fractions
+from .shadow_engine import SiteModel, compute_adjusted_radiation, compute_zone_shade_fractions, compute_zone_spot_windows
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -38,6 +36,36 @@ def _get_sun_position(hass: HomeAssistant) -> tuple[float, float]:
         return 0.0, -90.0
     attrs = sun_state.attributes
     return float(attrs.get("azimuth", 0)), float(attrs.get("elevation", -90))
+
+
+def _sample_day_sun_path(lat: float, lng: float, when, step_minutes: int = 60) -> list[tuple[float, float, float]]:
+    """Sample (azimuth, elevation, weight) across the daylight hours of a day.
+
+    Weight tracks clear-sky radiation on a horizontal surface (sin of elevation)
+    so midday dominates, matching how solar exposure actually accumulates.
+    """
+    import math
+    from datetime import datetime, timedelta
+    from astral import Observer
+    from astral.sun import azimuth as astral_az, elevation as astral_el
+
+    obs = Observer(latitude=lat, longitude=lng, elevation=0)
+    tz = when.tzinfo
+    samples: list[tuple[float, float, float]] = []
+    t = datetime(when.year, when.month, when.day, 0, 0, tzinfo=tz)
+    end = t + timedelta(days=1)
+    while t < end:
+        try:
+            el = float(astral_el(obs, t))
+            az = float(astral_az(obs, t))
+        except ValueError:
+            t += timedelta(minutes=step_minutes)
+            continue
+        if el > 2.0:
+            samples.append((az, el, math.sin(math.radians(el))))
+        t += timedelta(minutes=step_minutes)
+    return samples
+
 
 
 class SolarShadeCoordinator(DataUpdateCoordinator):
@@ -69,10 +97,9 @@ class SolarShadeCoordinator(DataUpdateCoordinator):
         self._min_shadow_height: float = entry.options.get(
             CONF_MIN_SHADOW_HEIGHT, DEFAULT_MIN_SHADOW_HEIGHT
         )
-        self._shade_method: str = entry.options.get(
-            CONF_SHADE_METHOD, DEFAULT_SHADE_METHOD
-        )
         self.site = site
+        self._spot_windows: dict[str, dict] | None = None
+        self._spot_windows_day: int | None = None
 
     async def _async_update_data(self) -> dict[str, dict]:
         """Read radiation source, compute live shadows, return adjusted values."""
@@ -120,15 +147,18 @@ class SolarShadeCoordinator(DataUpdateCoordinator):
         from .const import CONF_CANOPY_MODEL, DEFAULT_CANOPY_MODEL
         canopy_model = self.config_entry.options.get(CONF_CANOPY_MODEL, DEFAULT_CANOPY_MODEL)
 
+        spot_windows = await self._get_spot_windows(day_of_year, canopy_model)
+
         shade_stats = await self.hass.async_add_executor_job(
             compute_zone_shade_fractions, self.site, azimuth, elevation,
-            self._min_shadow_height, day_of_year, canopy_model,
+            self._min_shadow_height, day_of_year, canopy_model, spot_windows,
         )
 
         result: dict[str, dict] = {}
         for zone in self.site.zones:
             stats = shade_stats.get(zone.zone_id, {"average": 0.0, "sunniest": 0.0, "shadiest": 0.0})
-            shade = stats.get(self._shade_method, stats["average"])
+            method = getattr(zone, "shade_method", "average")
+            shade = stats.get(method, stats["average"])
             adjusted = compute_adjusted_radiation(raw, shade, diffuse)
             result[zone.zone_id] = {
                 "adjusted_radiation": adjusted,
@@ -137,6 +167,8 @@ class SolarShadeCoordinator(DataUpdateCoordinator):
                 "shade_average": stats["average"],
                 "shade_sunniest": stats["sunniest"],
                 "shade_shadiest": stats["shadiest"],
+                "shade_method": method,
+                "spot_area": getattr(zone, "spot_area", 1.0),
                 "diffuse_fraction": round(diffuse, 3),
                 "zone_name": zone.zone_name,
                 "sun_azimuth": round(azimuth, 1),
@@ -144,3 +176,25 @@ class SolarShadeCoordinator(DataUpdateCoordinator):
             }
 
         return result
+
+    async def _get_spot_windows(self, day_of_year: int, canopy_model: str) -> dict[str, dict] | None:
+        """Fixed sunniest/shadiest patches, recomputed once per day from sun path."""
+        needs_spots = any(
+            getattr(z, "shade_method", "average") in ("sunniest", "shadiest")
+            for z in self.site.zones
+        )
+        if not needs_spots:
+            return None
+        if self._spot_windows is not None and self._spot_windows_day == day_of_year:
+            return self._spot_windows
+
+        from homeassistant.util import dt as dt_util
+        when = dt_util.now()
+        samples = _sample_day_sun_path(self.site.latitude, self.site.longitude, when)
+        windows = await self.hass.async_add_executor_job(
+            compute_zone_spot_windows, self.site, samples,
+            self._min_shadow_height, day_of_year, canopy_model,
+        )
+        self._spot_windows = windows
+        self._spot_windows_day = day_of_year
+        return windows

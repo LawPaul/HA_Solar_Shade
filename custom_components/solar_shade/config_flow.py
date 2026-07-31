@@ -29,7 +29,6 @@ from .const import (
     CONF_MIN_CELL_SIZE,
     CONF_RADIATION_ENTITY,
 
-    CONF_SHADE_METHOD,
     CONF_UPDATE_INTERVAL,
     CONF_ZONES,
     DATA_DIR,
@@ -42,7 +41,6 @@ from .const import (
     DEFAULT_MANUAL_EPSG,
     DEFAULT_MIN_CELL_SIZE,
     DEFAULT_MIN_SHADOW_HEIGHT,
-    DEFAULT_SHADE_METHOD,
     DEFAULT_UPDATE_INTERVAL,
     DOMAIN,
     DSM_PROVIDER_AUTO,
@@ -55,9 +53,6 @@ from .const import (
     DSM_SOURCE_LAZ,
     CANOPY_MODEL_RAISED,
     CANOPY_MODEL_SOLID,
-    SHADE_METHOD_AVERAGE,
-    SHADE_METHOD_SHADIEST,
-    SHADE_METHOD_SUNNIEST,
 )
 
 
@@ -265,19 +260,6 @@ class SolarShadeOptionsFlow(config_entries.OptionsFlow):
                         min=0.1, max=5.0, step=0.1,
                         unit_of_measurement="m",
                         mode="box",
-                    )
-                ),
-                vol.Optional(
-                    CONF_SHADE_METHOD,
-                    default=current.get(CONF_SHADE_METHOD, DEFAULT_SHADE_METHOD),
-                ): selector.SelectSelector(
-                    selector.SelectSelectorConfig(
-                        options=[
-                            selector.SelectOptionDict(value=SHADE_METHOD_AVERAGE, label="Average across zone (recommended)"),
-                            selector.SelectOptionDict(value=SHADE_METHOD_SUNNIEST, label="Sunniest spot (prevents under-watering)"),
-                            selector.SelectOptionDict(value=SHADE_METHOD_SHADIEST, label="Shadiest spot (prevents over-watering)"),
-                        ],
-                        mode=selector.SelectSelectorMode.DROPDOWN,
                     )
                 ),
                 vol.Optional(

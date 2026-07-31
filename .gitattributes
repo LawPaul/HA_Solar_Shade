@@ -1,0 +1,9 @@
+# Normalise line endings on commit. The live Home Assistant deployment writes
+# CRLF, which otherwise shows every file as fully rewritten on each sync.
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.npz binary
+*.laz binary
+*.las binary

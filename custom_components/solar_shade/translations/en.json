@@ -33,7 +33,6 @@
           "update_interval": "Sensor update interval",
           "download_radius": "LiDAR download radius (increase for larger properties)",
           "min_shadow_height": "Min shadow height (objects shorter than this don't cast shadows)",
-          "shade_method": "Shade calculation method",
           "canopy_model": "Tree canopy model",
           "dsm_gap_fill": "Fill DSM gaps (experimental, may cause artifacts)",
           "dsm_provider": "Elevation data provider",

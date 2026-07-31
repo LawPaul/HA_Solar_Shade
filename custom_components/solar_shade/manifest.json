@@ -9,5 +9,5 @@
   "iot_class": "calculated",
   "issue_tracker": "https://github.com/LawPaul/HA_Solar_Shade/issues",
   "requirements": ["numpy>=1.21", "laspy>=2.0,<3.0", "laszip>=0.2.1", "pyproj>=3.4"],
-  "version": "1.0.0"
+  "version": "1.2.0"
 }

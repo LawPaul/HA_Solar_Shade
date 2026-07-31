@@ -121,6 +121,11 @@ class ZoneDef:
     # Surface type: "ground" = shade measured at DTM level (default)
     #               "dsm" = shade measured at DSM level (rooftops, elevated surfaces)
     surface: str = "ground"
+    # Shade aggregation method for this zone: "average" | "sunniest" | "shadiest"
+    shade_method: str = "average"
+    # Spot size in m² used by the "sunniest"/"shadiest" methods: the shade value
+    # reported is the min/max average over a sliding window of this area.
+    spot_area: float = 1.0
 
 
 @dataclass
@@ -698,6 +703,7 @@ def compute_zone_shade_fractions(
     min_shadow_height: float = 1.5,
     day_of_year: int = 172,
     canopy_model: str = "solid",
+    spot_windows: dict[str, dict] | None = None,
 ) -> dict[str, dict]:
     """Compute shade stats for each zone given current sun position.
 
@@ -706,6 +712,12 @@ def compute_zone_shade_fractions(
     - "dsm" zones: shadow computed with DSM as receive surface (rooftops)
 
     day_of_year is used to adjust high-veg transmittance for seasonal leaf cover.
+
+    ``spot_windows`` (from :func:`compute_zone_spot_windows`) pins the sunniest
+    and shadiest sub-patches to fixed locations chosen by cumulative daily solar
+    exposure, so they represent a stable piece of ground rather than wherever is
+    momentarily brightest/darkest. When omitted, sunniest/shadiest fall back to
+    the instantaneous min/max over a sliding spot.
 
     Returns per zone: {
         "average": float,   # mean shade fraction (0-1)
@@ -724,28 +736,10 @@ def compute_zone_shade_fractions(
     has_dsm_zones = any(z.surface == "dsm" for z in site.zones)
     has_ground_zones = any(z.surface != "dsm" for z in site.zones)
 
-    shadow_map_ground = None
-    shadow_map_dsm = None
-
-    canopy = site.canopy_base if canopy_model == "raised" else None
-
-    if has_ground_zones:
-        shadow_map_ground = compute_shadow_map(
-            site.dsm, sun_azimuth_deg, sun_elevation_deg, site.resolution,
-            ground=site.ground,
-            min_shadow_height=min_shadow_height,
-            transmittance=transmittance,
-            canopy_base=canopy,
-        )
-
-    if has_dsm_zones:
-        shadow_map_dsm = compute_shadow_map(
-            site.dsm, sun_azimuth_deg, sun_elevation_deg, site.resolution,
-            ground=site.dsm,
-            min_shadow_height=0.0,
-            transmittance=transmittance,
-            canopy_base=canopy,
-        )
+    shadow_map_ground, shadow_map_dsm = _shadow_maps_for_sun(
+        site, sun_azimuth_deg, sun_elevation_deg, min_shadow_height,
+        transmittance, canopy_model, has_ground_zones, has_dsm_zones,
+    )
 
     results: dict[str, dict] = {}
     for zone in site.zones:
@@ -764,25 +758,17 @@ def compute_zone_shade_fractions(
             results[zone.zone_id] = {"average": 0.0, "sunniest": 0.0, "shadiest": 0.0}
         else:
             avg = round(float(pixels.sum()) / total, 3)
-            # For spatial variation, compute shade in sub-regions
-            # sunniest = minimum local shade, shadiest = maximum local shade
-            # Split zone into a small grid and compute local shade per cell
-            if total >= 9 and zone.mask is None:
-                rows_z = zone.row_end - zone.row_start
-                cols_z = zone.col_end - zone.col_start
-                sr = max(1, rows_z // 3)
-                sc = max(1, cols_z // 3)
-                local_shades = []
-                for r in range(0, rows_z, sr):
-                    for c in range(0, cols_z, sc):
-                        block = zone_shadow[r:r+sr, c:c+sc]
-                        if block.size > 0:
-                            local_shades.append(float(block.mean()))
-                sunniest = round(min(local_shades), 3) if local_shades else avg
-                shadiest = round(max(local_shades), 3) if local_shades else avg
+            win = spot_windows.get(zone.zone_id) if spot_windows else None
+            if win is not None:
+                # Fixed representative patches from cumulative daily exposure.
+                sunniest = round(_window_mean_at(zone_shadow, zone.mask, *win["sunniest"]), 3)
+                shadiest = round(_window_mean_at(zone_shadow, zone.mask, *win["shadiest"]), 3)
             else:
-                sunniest = 0.0 if avg < 1.0 else 1.0
-                shadiest = 1.0 if avg > 0.0 else 0.0
+                # Fallback: instantaneous extremes over a sliding spot.
+                sunniest, shadiest = _spot_extremes(
+                    zone_shadow, zone.mask, site.resolution,
+                    getattr(zone, "spot_area", 1.0), avg,
+                )
 
             results[zone.zone_id] = {
                 "average": avg,
@@ -791,6 +777,209 @@ def compute_zone_shade_fractions(
             }
 
     return results
+
+
+def _shadow_maps_for_sun(
+    site: SiteModel,
+    sun_azimuth_deg: float,
+    sun_elevation_deg: float,
+    min_shadow_height: float,
+    transmittance: np.ndarray,
+    canopy_model: str,
+    need_ground: bool,
+    need_dsm: bool,
+) -> tuple[np.ndarray | None, np.ndarray | None]:
+    """Compute the ground and/or DSM-surface shadow maps for one sun position."""
+    canopy = site.canopy_base if canopy_model == "raised" else None
+    ground_map = None
+    dsm_map = None
+    if need_ground:
+        ground_map = compute_shadow_map(
+            site.dsm, sun_azimuth_deg, sun_elevation_deg, site.resolution,
+            ground=site.ground,
+            min_shadow_height=min_shadow_height,
+            transmittance=transmittance,
+            canopy_base=canopy,
+        )
+    if need_dsm:
+        dsm_map = compute_shadow_map(
+            site.dsm, sun_azimuth_deg, sun_elevation_deg, site.resolution,
+            ground=site.dsm,
+            min_shadow_height=0.0,
+            transmittance=transmittance,
+            canopy_base=canopy,
+        )
+    return ground_map, dsm_map
+
+
+def compute_zone_spot_windows(
+    site: SiteModel,
+    sun_samples,
+    min_shadow_height: float = 1.5,
+    day_of_year: int = 172,
+    canopy_model: str = "solid",
+) -> dict[str, dict]:
+    """Pick a FIXED sunniest/shadiest patch per zone from daily solar exposure.
+
+    The sunniest and shadiest spots should describe a stable piece of ground,
+    not wherever happens to be brightest at this instant, which roams across the
+    zone as the sun moves. This integrates shade over a day's sun path and picks
+    the window with the lowest (sunniest) / highest (shadiest) cumulative shade.
+
+    ``sun_samples`` is an iterable of ``(azimuth_deg, elevation_deg, weight)``;
+    weight should track solar radiation (e.g. ``sin(elevation)``) so midday
+    counts more. Samples at/below the horizon are skipped.
+
+    Returns ``{zone_id: {"sunniest": (r0, c0, w), "shadiest": (r0, c0, w)}}``
+    where coordinates are top-left offsets in the zone sub-array. Zones with no
+    daylight are omitted.
+    """
+    if not site.zones:
+        return {}
+
+    transmittance = build_transmittance_grid(site, day_of_year)
+    need_ground = any(z.surface != "dsm" for z in site.zones)
+    need_dsm = any(z.surface == "dsm" for z in site.zones)
+
+    accum: dict[str, np.ndarray] = {}
+    total_w = 0.0
+    for az, el, w in sun_samples:
+        if el <= MIN_SUN_ELEVATION or w <= 0:
+            continue
+        gmap, dmap = _shadow_maps_for_sun(
+            site, az, el, min_shadow_height, transmittance,
+            canopy_model, need_ground, need_dsm,
+        )
+        total_w += w
+        for zone in site.zones:
+            smap = dmap if zone.surface == "dsm" else gmap
+            sub = smap[zone.row_start:zone.row_end, zone.col_start:zone.col_end]
+            if zone.zone_id not in accum:
+                accum[zone.zone_id] = np.zeros(sub.shape, dtype=np.float64)
+            accum[zone.zone_id] += sub.astype(np.float64) * w
+
+    if total_w <= 0:
+        return {}
+
+    result: dict[str, dict] = {}
+    for zone in site.zones:
+        daily = accum.get(zone.zone_id)
+        if daily is None:
+            continue
+        daily = daily / total_w  # daily-mean shade per pixel
+        rows, cols = daily.shape
+        if rows == 0 or cols == 0:
+            continue
+        w = _window_size(rows, cols, site.resolution, getattr(zone, "spot_area", 1.0))
+        means, fully_valid, cnt = _window_mean_grid(daily, zone.mask, w)
+        sun_pos = _argbest(means, fully_valid, cnt, want_min=True)
+        sha_pos = _argbest(means, fully_valid, cnt, want_min=False)
+        if sun_pos is None or sha_pos is None:
+            continue
+        result[zone.zone_id] = {
+            "sunniest": (int(sun_pos[0]), int(sun_pos[1]), w),
+            "shadiest": (int(sha_pos[0]), int(sha_pos[1]), w),
+        }
+    return result
+
+
+
+def _integral_image(a: np.ndarray) -> np.ndarray:
+    """Return a zero-padded summed-area table for fast window sums."""
+    ii = np.zeros((a.shape[0] + 1, a.shape[1] + 1), dtype=np.float64)
+    ii[1:, 1:] = a.cumsum(axis=0).cumsum(axis=1)
+    return ii
+
+
+def _window_size(rows: int, cols: int, resolution: float, spot_area_m2: float) -> int:
+    """Side length (pixels) of a square window of ``spot_area_m2``, clamped."""
+    side_m = math.sqrt(max(spot_area_m2, 0.0))
+    w = max(1, int(round(side_m / resolution))) if resolution > 0 else 1
+    return min(w, rows, cols)
+
+
+def _window_mean_grid(
+    values: np.ndarray, mask: np.ndarray | None, w: int
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Mean of ``values`` over every w×w window (masked pixels only).
+
+    Returns (means, fully_valid, counts): means[i,j] is the window mean,
+    fully_valid[i,j] is True when the window lies entirely in the mask, and
+    counts[i,j] is the number of masked pixels in that window.
+    """
+    rows, cols = values.shape
+    mask_f = np.ones((rows, cols), dtype=np.float64) if mask is None else mask.astype(np.float64)
+    vals = np.where(mask_f > 0, values.astype(np.float64), 0.0)
+
+    ii_v = _integral_image(vals)
+    ii_m = _integral_image(mask_f)
+
+    def _win(ii: np.ndarray) -> np.ndarray:
+        return ii[w:, w:] - ii[:-w, w:] - ii[w:, :-w] + ii[:-w, :-w]
+
+    sum_v = _win(ii_v)
+    cnt = _win(ii_m)
+    means = np.where(cnt > 0, sum_v / np.where(cnt > 0, cnt, 1.0), 0.0)
+    fully_valid = cnt >= (w * w) - 1e-6
+    return means, fully_valid, cnt
+
+
+def _argbest(
+    means: np.ndarray, fully_valid: np.ndarray, cnt: np.ndarray, want_min: bool
+) -> tuple[int, int] | None:
+    """Top-left of the min/max window, preferring fully-masked windows."""
+    allowed = fully_valid if fully_valid.any() else (cnt > 0)
+    if not allowed.any():
+        return None
+    fill = np.inf if want_min else -np.inf
+    m = np.where(allowed, means, fill)
+    flat = int(np.argmin(m) if want_min else np.argmax(m))
+    return np.unravel_index(flat, m.shape)
+
+
+def _window_mean_at(
+    values: np.ndarray, mask: np.ndarray | None, r0: int, c0: int, w: int
+) -> float:
+    """Mean of ``values`` over a fixed w×w window (masked pixels only)."""
+    sub = values[r0:r0 + w, c0:c0 + w]
+    if sub.size == 0:
+        return float(values.mean()) if values.size else 0.0
+    if mask is not None:
+        m = mask[r0:r0 + w, c0:c0 + w]
+        if m.any():
+            return float(sub[m].mean())
+    return float(sub.mean())
+
+
+def _spot_extremes(
+    values: np.ndarray,
+    mask: np.ndarray | None,
+    resolution: float,
+    spot_area_m2: float,
+    avg: float,
+) -> tuple[float, float]:
+    """Instantaneous min (sunniest) / max (shadiest) mean shade over a spot.
+
+    The spot is a square window whose area is ``spot_area_m2`` m². For masked
+    zones only windows lying fully inside the mask are considered; if none fit,
+    it falls back to the best partially-covered window, then to ``avg``.
+    """
+    rows, cols = values.shape
+    if rows == 0 or cols == 0:
+        return avg, avg
+
+    w = _window_size(rows, cols, resolution, spot_area_m2)
+    if w <= 0:
+        return avg, avg
+
+    means, fully_valid, cnt = _window_mean_grid(values, mask, w)
+    allowed = fully_valid if fully_valid.any() else (cnt > 0)
+    if not allowed.any():
+        return avg, avg
+    vals = means[allowed]
+    return round(float(vals.min()), 3), round(float(vals.max()), 3)
+
+
 
 
 def compute_adjusted_radiation(
@@ -840,6 +1029,8 @@ def _zones_to_defs(
             row_end=row_end,
             col_start=col_start,
             col_end=col_end,
+            shade_method=z.get("shade_method", "average"),
+            spot_area=float(z.get("spot_area", 1.0)),
         ))
 
     return result
@@ -868,6 +1059,8 @@ def apply_zones_to_site(site: SiteModel, zones: list[dict]) -> None:
                 color=z.get("color"),
                 site=site,
                 surface=z.get("surface", "ground"),
+                shade_method=z.get("shade_method", "average"),
+                spot_area=float(z.get("spot_area", 1.0)),
             )
             if zone_def:
                 new_zones.append(zone_def)
@@ -889,6 +1082,8 @@ def _polygon_to_zone_def(
     color: str | None,
     site: SiteModel,
     surface: str = "ground",
+    shade_method: str = "average",
+    spot_area: float = 1.0,
 ) -> ZoneDef | None:
     """Convert a lat/lng polygon into a pixel-masked ZoneDef.
 
@@ -963,6 +1158,8 @@ def _polygon_to_zone_def(
         polygon_latlng=polygon_latlng,
         color=color,
         surface=surface,
+        shade_method=shade_method,
+        spot_area=spot_area,
     )
 
 

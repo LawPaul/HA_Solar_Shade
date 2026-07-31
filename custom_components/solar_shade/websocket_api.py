@@ -18,22 +18,31 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.util import dt as dt_util
 
 from .const import (
+    CONF_CANOPY_MODEL,
     CONF_DIFFUSE_ENTITY,
     CONF_DIFFUSE_FRACTION,
     CONF_DOWNLOAD_RADIUS,
     CONF_ENABLE_OPEN_METEO,
     CONF_LATITUDE,
     CONF_LONGITUDE,
+    CONF_MIN_SHADOW_HEIGHT,
     CONF_RADIATION_ENTITY,
     CONF_ZONES,
+    DEFAULT_CANOPY_MODEL,
     DEFAULT_DOWNLOAD_RADIUS,
     DEFAULT_DIFFUSE_FRACTION,
     DEFAULT_ENABLE_OPEN_METEO,
+    DEFAULT_MIN_SHADOW_HEIGHT,
     DOMAIN,
 )
 from .geo import latlon_to_utm
 
 _LOGGER = logging.getLogger(__name__)
+
+# Entry IDs whose pending options-update reload should be skipped because a
+# WebSocket handler is performing the reload itself (and awaiting it), so the
+# update listener must not fire a duplicate, redundant reload.
+SKIP_OPTIONS_RELOAD: set[str] = set()
 
 
 @callback
@@ -51,6 +60,7 @@ def async_register_websocket_api(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_get_surface_type_image)
     websocket_api.async_register_command(hass, ws_apply_eraser)
     websocket_api.async_register_command(hass, ws_undo_eraser)
+    websocket_api.async_register_command(hass, ws_get_spot_windows)
 
 
 @websocket_api.websocket_command(
@@ -131,6 +141,12 @@ def ws_get_config(
                 vol.Optional("color"): str,
                 vol.Optional("is_point", default=False): bool,
                 vol.Optional("surface", default="ground"): vol.In(["ground", "dsm"]),
+                vol.Optional("shade_method", default="average"): vol.In(
+                    ["average", "sunniest", "shadiest"]
+                ),
+                vol.Optional("spot_area", default=1.0): vol.All(
+                    vol.Coerce(float), vol.Range(min=0.25, max=100.0)
+                ),
             }
         ],
     }
@@ -175,9 +191,16 @@ async def ws_save_zones(
                 )
                 return
 
-    # Update options (this triggers reload via update listener)
+    # Update options, then rebuild the site synchronously so any follow-up
+    # request (e.g. get_spot_windows) reads the new zones. We do the reload
+    # ourselves and suppress the update listener's duplicate reload.
     new_options = {**entry.options, CONF_ZONES: zones}
+    SKIP_OPTIONS_RELOAD.add(entry.entry_id)
     hass.config_entries.async_update_entry(entry, options=new_options)
+    try:
+        await hass.config_entries.async_reload(entry.entry_id)
+    finally:
+        SKIP_OPTIONS_RELOAD.discard(entry.entry_id)
 
     _LOGGER.info("Saved %d zones from map panel", len(zones))
     connection.send_result(msg["id"], {"saved": len(zones)})
@@ -1002,6 +1025,87 @@ def _latlng_to_pixel(site, lat: float, lng: float) -> tuple[int, int]:
     row = max(0, min(row, site.rows - 1))
     col = max(0, min(col, site.cols - 1))
     return row, col
+
+
+def _pixel_rect_to_latlng(site, row: int, col: int, w: int) -> dict:
+    """Convert a w×w pixel block at (row, col) to a lat/lng bounds dict."""
+    if site.native_epsg:
+        from .geo import latlon_to_epsg, epsg_to_latlon
+        center_e, center_n = latlon_to_epsg(site.latitude, site.longitude, site.native_epsg)
+        epsg = site.native_epsg
+    else:
+        center_e, center_n = latlon_to_utm(site.latitude, site.longitude)[1:3]
+        zone = int((site.longitude + 180) / 6) + 1
+        epsg = (32600 + zone) if site.latitude >= 0 else (32700 + zone)
+        from .geo import epsg_to_latlon
+
+    res = site.resolution
+    x_w = center_e + site.x_min_m + col * res
+    x_e = center_e + site.x_min_m + (col + w) * res
+    y_n = center_n + site.y_max_m - row * res
+    y_s = center_n + site.y_max_m - (row + w) * res
+    s_lat, w_lon = epsg_to_latlon(x_w, y_s, epsg)
+    n_lat, e_lon = epsg_to_latlon(x_e, y_n, epsg)
+    return {"south": s_lat, "north": n_lat, "west": w_lon, "east": e_lon}
+
+
+@websocket_api.websocket_command(
+    {vol.Required("type"): "solar_shade/get_spot_windows"}
+)
+@websocket_api.async_response
+async def ws_get_spot_windows(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Return the fixed sunniest/shadiest patch rectangles for each zone.
+
+    Lets the panel draw the representative patch chosen from the day's solar
+    exposure, so the user can see exactly which piece of ground drives watering.
+    """
+    site = _get_site(hass)
+    if site is None or site.is_placeholder or not site.zones:
+        connection.send_result(msg["id"], {"available": False, "patches": []})
+        return
+
+    from .coordinator import _sample_day_sun_path
+    from .shadow_engine import compute_zone_spot_windows
+
+    # Must match the coordinator's parameters, or the patch drawn on the map
+    # is not the patch the watering figure is actually derived from.
+    entries = hass.config_entries.async_entries(DOMAIN)
+    options = entries[0].options if entries else {}
+    min_shadow_height = options.get(
+        CONF_MIN_SHADOW_HEIGHT, DEFAULT_MIN_SHADOW_HEIGHT
+    )
+    canopy_model = options.get(CONF_CANOPY_MODEL, DEFAULT_CANOPY_MODEL)
+
+    when = dt_util.now()
+    samples = _sample_day_sun_path(site.latitude, site.longitude, when)
+    day_of_year = when.timetuple().tm_yday
+    windows = await hass.async_add_executor_job(
+        compute_zone_spot_windows, site, samples, min_shadow_height,
+        day_of_year, canopy_model,
+    )
+
+    patches = []
+    for zone in site.zones:
+        method = getattr(zone, "shade_method", "average")
+        if method not in ("sunniest", "shadiest"):
+            continue
+        win = windows.get(zone.zone_id)
+        if not win:
+            continue
+        r0, c0, w = win[method]
+        rect = _pixel_rect_to_latlng(site, zone.row_start + r0, zone.col_start + c0, w)
+        patches.append({
+            "id": zone.zone_id,
+            "name": zone.zone_name,
+            "method": method,
+            "bounds": rect,
+        })
+
+    connection.send_result(msg["id"], {"available": True, "patches": patches})
 
 
 @websocket_api.websocket_command(
